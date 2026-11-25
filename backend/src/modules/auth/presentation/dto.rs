@@ -150,11 +150,12 @@ impl PasswordResetRequest {
     }
 }
 
-impl From<PasswordResetConfirmRequest> for ConfirmPasswordResetCommand {
-    fn from(request: PasswordResetConfirmRequest) -> Self {
-        Self {
-            token: request.token,
-            new_password: request.new_password,
+impl PasswordResetConfirmRequest {
+    pub fn into_command(self, client_ip: std::net::IpAddr) -> ConfirmPasswordResetCommand {
+        ConfirmPasswordResetCommand {
+            token: self.token,
+            new_password: self.new_password,
+            client_ip,
         }
     }
 }

@@ -1,11 +1,13 @@
 //! `POST /api/v1/auth/register` and `POST /api/v1/auth/login`, including the
-//! failed-attempt limits (P5).
+//! failed-attempt limits (P5 as amended by DECISIONS #13: 5 per (email, IP)
+//! pair, 20 per IP and 50 per email in 15 minutes).
 
 use std::net::{IpAddr, SocketAddr};
 
 use axum::http::StatusCode;
 use chrono::Duration;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tokio::task::JoinSet;
 
@@ -28,6 +30,21 @@ async fn login_from(app: &TestApp, peer: IpAddr, email: &str, password: &str) ->
         .json(&json!({ "email": email, "password": password }))
         .send()
         .await
+}
+
+/// The `n`-th test client address, `198.51.100.n`, distinct from the default peer.
+fn client(n: u8) -> IpAddr {
+    IpAddr::from([198, 51, 100, n])
+}
+
+/// Rows stored under the plain-text limiter `label` (hashed like the limiter).
+async fn rows_for(pool: &PgPool, label: &str) -> i64 {
+    let hash: [u8; 32] = Sha256::digest(label.as_bytes()).into();
+    sqlx::query_scalar("SELECT count(*) FROM auth_attempts WHERE key_hash = $1")
+        .bind(&hash[..])
+        .fetch_one(pool)
+        .await
+        .expect("count auth_attempts")
 }
 
 async fn registered(pool: PgPool) -> TestApp {
@@ -211,7 +228,9 @@ async fn login_with_malformed_input_returns_invalid_credentials(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn sixth_login_after_five_failures_returns_429_even_with_correct_password(pool: PgPool) {
+async fn sixth_login_from_one_ip_after_five_failures_returns_429_even_with_correct_password(
+    pool: PgPool,
+) {
     let app = registered(pool).await;
     for _ in 0..5 {
         assert_eq!(
@@ -226,6 +245,89 @@ async fn sixth_login_after_five_failures_returns_429_even_with_correct_password(
     assert_eq!(res.headers["retry-after"], "900");
     assert_eq!(res.body["error"]["code"], "rate_limited");
     assert!(res.set_cookie("dn_refresh").is_none());
+
+    // The pair (email, that IP) is limited, not the email: another IP still
+    // gets its password checked.
+    let elsewhere = login_from(&app, client(1), EMAIL, WRONG).await;
+    assert_eq!(
+        elsewhere.status,
+        StatusCode::UNAUTHORIZED,
+        "{}",
+        elsewhere.text
+    );
+    let owner = login_from(&app, client(2), EMAIL, PASSWORD).await;
+    assert_eq!(owner.status, StatusCode::OK, "{}", owner.text);
+}
+
+#[sqlx::test]
+async fn slow_wrong_guesses_from_one_ip_never_lock_the_owner_out(pool: PgPool) {
+    // Review finding F2: one wrong password every 2.5 minutes from IP A for
+    // 45 minutes used to keep the email locked for good.
+    let app = registered(pool.clone()).await;
+    let attacker = client(1);
+    let mut limited = 0;
+    for _ in 0..18 {
+        let res = login_from(&app, attacker, EMAIL, WRONG).await;
+        match res.status {
+            StatusCode::UNAUTHORIZED => {}
+            StatusCode::TOO_MANY_REQUESTS => limited += 1,
+            other => panic!("unexpected {other}: {}", res.text),
+        }
+        app.clock
+            .advance(Duration::minutes(2) + Duration::seconds(30));
+    }
+    assert!(limited > 0, "the attacker's own pair is limited");
+    // Only the attempts that passed the pair limit reach the email's counter.
+    assert_eq!(rows_for(&pool, &format!("login:email:{EMAIL}")).await, 5);
+
+    let res = login_from(&app, client(2), EMAIL, PASSWORD).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+}
+
+#[sqlx::test]
+async fn hammering_from_one_ip_does_not_reach_the_global_email_limit(pool: PgPool) {
+    let app = registered(pool.clone()).await;
+    let attacker = client(1);
+    for i in 0..100 {
+        let res = login_from(&app, attacker, EMAIL, WRONG).await;
+        let expected = if i < 5 {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::TOO_MANY_REQUESTS
+        };
+        assert_eq!(res.status, expected, "attempt {i}: {}", res.text);
+    }
+    // Attempts blocked by the pair limit never reach the email's counter.
+    assert_eq!(rows_for(&pool, &format!("login:email:{EMAIL}")).await, 5);
+    assert_eq!(
+        rows_for(&pool, &format!("login:pair:{EMAIL}|{attacker}")).await,
+        100
+    );
+
+    let res = login_from(&app, client(2), EMAIL, PASSWORD).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+}
+
+#[sqlx::test]
+async fn fifty_first_attempt_across_many_ips_returns_429_even_with_correct_password(pool: PgPool) {
+    let app = registered(pool).await;
+    for n in 1..=10 {
+        for i in 0..5 {
+            let res = login_from(&app, client(n), EMAIL, WRONG).await;
+            assert_eq!(res.status, StatusCode::UNAUTHORIZED, "ip {n}, attempt {i}");
+        }
+    }
+
+    let res = login_from(&app, client(11), EMAIL, PASSWORD).await;
+
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS, "{}", res.text);
+    assert_eq!(res.headers["retry-after"], "900");
+    assert_eq!(res.body["error"]["code"], "rate_limited");
+    assert!(res.set_cookie("dn_refresh").is_none());
+
+    // The global cap is per email: other emails from a fresh IP are unaffected.
+    let other = login_from(&app, client(12), "other@example.com", WRONG).await;
+    assert_eq!(other.status, StatusCode::UNAUTHORIZED);
 }
 
 #[sqlx::test]
@@ -261,17 +363,46 @@ async fn failure_window_expires_after_15_minutes(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn successful_login_clears_email_failures(pool: PgPool) {
+async fn successful_login_clears_the_pair_failures(pool: PgPool) {
     let app = registered(pool).await;
     for _ in 0..4 {
         login(&app, EMAIL, WRONG).await;
     }
     assert_eq!(login(&app, EMAIL, PASSWORD).await.status, StatusCode::OK);
 
-    for i in 0..4 {
+    // The pair starts from zero: five more failures, then the limit.
+    for i in 0..5 {
         let res = login(&app, EMAIL, WRONG).await;
         assert_eq!(res.status, StatusCode::UNAUTHORIZED, "attempt {i}");
     }
+    assert_eq!(
+        login(&app, EMAIL, WRONG).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[sqlx::test]
+async fn successful_login_clears_the_global_counter_but_not_other_ips_pairs(pool: PgPool) {
+    let app = registered(pool.clone()).await;
+    for n in 1..=9 {
+        for _ in 0..5 {
+            login_from(&app, client(n), EMAIL, WRONG).await;
+        }
+    }
+    let owner = login_from(&app, client(10), EMAIL, PASSWORD).await;
+    assert_eq!(owner.status, StatusCode::OK, "{}", owner.text);
+    assert_eq!(rows_for(&pool, &format!("login:email:{EMAIL}")).await, 0);
+
+    // 45 earlier failures are gone from the global counter: ten more fit.
+    for n in 11..=12 {
+        for i in 0..5 {
+            let res = login_from(&app, client(n), EMAIL, WRONG).await;
+            assert_eq!(res.status, StatusCode::UNAUTHORIZED, "ip {n}, attempt {i}");
+        }
+    }
+    // An attacker's own pair counter is kept.
+    let attacker = login_from(&app, client(1), EMAIL, WRONG).await;
+    assert_eq!(attacker.status, StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[sqlx::test]
@@ -285,8 +416,8 @@ async fn attempts_table_stores_only_32_byte_hashes(pool: PgPool) {
         .await
         .expect("query auth_attempts");
 
-    // Two failed logins, each counted once per email and once per IP.
-    assert_eq!(lengths.len(), 4);
+    // Two failed logins, each counted once per pair, per IP and per email.
+    assert_eq!(lengths.len(), 6);
     assert!(lengths.iter().all(|len| *len == 32), "{lengths:?}");
 }
 
@@ -337,6 +468,35 @@ async fn concurrent_wrong_logins_for_one_email_allow_at_most_five_password_check
         .count();
     assert!(unauthorized <= 5, "{statuses:?}");
     assert!(limited >= 15, "{statuses:?}");
+}
+
+#[sqlx::test]
+async fn concurrent_wrong_logins_from_many_ips_allow_at_most_fifty_password_checks(pool: PgPool) {
+    let app = registered(pool).await;
+
+    let mut set = JoinSet::new();
+    for n in 1..=12 {
+        for _ in 0..5 {
+            let request = app
+                .post("/api/v1/auth/login")
+                .peer(SocketAddr::new(client(n), 40000))
+                .json(&json!({ "email": EMAIL, "password": WRONG }));
+            set.spawn(async move { request.send().await.status });
+        }
+    }
+    let statuses: Vec<StatusCode> = set.join_all().await;
+
+    assert_eq!(statuses.len(), 60);
+    let unauthorized = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::UNAUTHORIZED)
+        .count();
+    let limited = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    assert!(unauthorized <= 50, "{statuses:?}");
+    assert_eq!(unauthorized + limited, 60, "{statuses:?}");
 }
 
 #[sqlx::test]

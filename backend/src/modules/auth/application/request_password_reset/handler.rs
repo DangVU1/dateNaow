@@ -7,7 +7,7 @@ use crate::modules::auth::application::error::AuthError;
 use crate::modules::auth::application::ports::{EmailSender, OutgoingEmail};
 use crate::modules::auth::application::request_password_reset::RequestPasswordResetCommand;
 use crate::modules::auth::application::services::attempt_limiter::{
-    AttemptLimiter, LimitKey, RESET_ACTION, RESET_PER_EMAIL, RESET_PER_IP,
+    AttemptLimiter, LimitKey, RESET_ACTION, RESET_PER_EMAIL, RESET_PER_IP, RESET_PER_PAIR,
 };
 use crate::modules::auth::domain::{AttemptRepository, OpaqueToken, PasswordResetRepository};
 use crate::modules::users::domain::{Email, UserRepository};
@@ -68,11 +68,16 @@ where
             AuthError::Validation(fields)
         })?;
 
-        // 2. Record first, count second (P5). Unknown emails count too.
+        // 2. Record first, count second (P5, #13). Unknown emails count too.
+        //    The email's global counter is reached only through the local
+        //    tier, so one address cannot use it up and block recovery.
         self.limiter
             .acquire(&[
-                LimitKey::email(RESET_ACTION, &email, RESET_PER_EMAIL),
-                LimitKey::ip(RESET_ACTION, cmd.client_ip, RESET_PER_IP),
+                &[
+                    LimitKey::pair(RESET_ACTION, &email, cmd.client_ip, RESET_PER_PAIR),
+                    LimitKey::ip(RESET_ACTION, cmd.client_ip, RESET_PER_IP),
+                ],
+                &[LimitKey::email(RESET_ACTION, &email, RESET_PER_EMAIL)],
             ])
             .await?;
 

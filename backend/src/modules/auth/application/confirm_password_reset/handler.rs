@@ -4,7 +4,7 @@ use crate::modules::auth::application::confirm_password_reset::ConfirmPasswordRe
 use crate::modules::auth::application::error::AuthError;
 use crate::modules::auth::application::services::PasswordHashService;
 use crate::modules::auth::application::services::attempt_limiter::{
-    AttemptLimiter, LOGIN_ACTION, LOGIN_PER_EMAIL, LimitKey,
+    AttemptLimiter, LOGIN_ACTION, LOGIN_PER_EMAIL, LOGIN_PER_PAIR, LimitKey,
 };
 use crate::modules::auth::domain::{
     AttemptRepository, OpaqueToken, PasswordResetRepository, PlainPassword,
@@ -90,11 +90,16 @@ where
         }
         tracing::info!(user_id = %record.user_id, "password reset completed");
 
-        // 4. Lift a sign-in lockout so the new password works at once.
+        // 4. Lift the sign-in limits that could stop the new password from
+        //    working at once: the email's global counter and the pair of the
+        //    IP that reset. Other IPs' pairs stay (#13).
         match self.users.find_by_id(record.user_id).await {
             Ok(Some(user)) => {
-                let key = LimitKey::email(LOGIN_ACTION, &user.email, LOGIN_PER_EMAIL);
-                self.limiter.clear(&key).await;
+                let email_key = LimitKey::email(LOGIN_ACTION, &user.email, LOGIN_PER_EMAIL);
+                let pair_key =
+                    LimitKey::pair(LOGIN_ACTION, &user.email, cmd.client_ip, LOGIN_PER_PAIR);
+                self.limiter.clear(&email_key).await;
+                self.limiter.clear(&pair_key).await;
             }
             Ok(None) => {}
             // The password is already changed; failing the request now would

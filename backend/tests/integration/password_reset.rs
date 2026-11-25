@@ -1,4 +1,5 @@
-//! Password reset (P5, P6): `POST /api/v1/auth/password-reset/request` and
+//! Password reset (P5 as amended by DECISIONS #13, P6):
+//! `POST /api/v1/auth/password-reset/request` and
 //! `POST /api/v1/auth/password-reset/confirm`.
 
 use std::net::{IpAddr, SocketAddr};
@@ -47,6 +48,19 @@ async fn login(app: &TestApp, email: &str, password: &str) -> TestResponse {
         .json(&json!({ "email": email, "password": password }))
         .send()
         .await
+}
+
+async fn login_from(app: &TestApp, peer: IpAddr, email: &str, password: &str) -> TestResponse {
+    app.post("/api/v1/auth/login")
+        .peer(SocketAddr::new(peer, 40000))
+        .json(&json!({ "email": email, "password": password }))
+        .send()
+        .await
+}
+
+/// The `n`-th test client address, `198.51.100.n`, distinct from the default peer.
+fn client(n: u8) -> IpAddr {
+    IpAddr::from([198, 51, 100, n])
 }
 
 async fn refresh(app: &TestApp, cookie: &str) -> TestResponse {
@@ -179,7 +193,7 @@ async fn request_rejects_unknown_fields(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn fourth_request_in_an_hour_returns_429(pool: PgPool) {
+async fn fourth_request_from_one_ip_in_an_hour_returns_429_but_other_ips_still_work(pool: PgPool) {
     let (app, _) = registered(pool).await;
 
     for _ in 0..3 {
@@ -202,6 +216,62 @@ async fn fourth_request_in_an_hour_returns_429(pool: PgPool) {
         3,
         "the blocked request sends nothing"
     );
+
+    // Another IP exhausting its pair limit cannot block the owner's recovery.
+    let owner = request_reset_from(&app, client(1), EMAIL).await;
+    assert_eq!(owner.status, StatusCode::NO_CONTENT, "{}", owner.text);
+    assert_eq!(app.mailer.wait_for(4).await.len(), 4);
+}
+
+#[sqlx::test]
+async fn hammering_reset_requests_from_one_ip_does_not_reach_the_global_limit(pool: PgPool) {
+    let (app, _) = registered(pool).await;
+    for i in 0..10 {
+        let expected = if i < 3 {
+            StatusCode::NO_CONTENT
+        } else {
+            StatusCode::TOO_MANY_REQUESTS
+        };
+        let res = request_reset_from(&app, client(1), EMAIL).await;
+        assert_eq!(res.status, expected, "request {i}: {}", res.text);
+    }
+
+    // Only the three requests that passed the pair limit count globally, so
+    // seven more from other IPs still fit in the 10-per-email cap.
+    for n in 2..=8 {
+        let res = request_reset_from(&app, client(n), EMAIL).await;
+        assert_eq!(res.status, StatusCode::NO_CONTENT, "ip {n}: {}", res.text);
+    }
+    assert_eq!(app.mailer.wait_for(10).await.len(), 10);
+}
+
+#[sqlx::test]
+async fn eleventh_request_for_one_email_across_many_ips_returns_429(pool: PgPool) {
+    let (app, _) = registered(pool).await;
+    for n in 1..=10 {
+        let res = request_reset_from(&app, client(n), EMAIL).await;
+        assert_eq!(res.status, StatusCode::NO_CONTENT, "ip {n}: {}", res.text);
+    }
+
+    let eleventh = request_reset_from(&app, client(11), EMAIL).await;
+
+    assert_eq!(
+        eleventh.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        eleventh.text
+    );
+    assert_eq!(eleventh.headers["retry-after"], "3600");
+    settle().await;
+    assert_eq!(
+        app.mailer.sent().len(),
+        10,
+        "the blocked request sends nothing"
+    );
+
+    // The cap is per email: another email from a fresh IP is unaffected.
+    let other = request_reset_from(&app, client(12), "other@example.com").await;
+    assert_eq!(other.status, StatusCode::NO_CONTENT);
 }
 
 #[sqlx::test]
@@ -457,7 +527,7 @@ async fn old_cookie_after_reset_returns_401_without_revoking_new_session(pool: P
 }
 
 #[sqlx::test]
-async fn reset_clears_login_failure_counter(pool: PgPool) {
+async fn reset_clears_the_login_pair_counter_of_the_resetting_ip(pool: PgPool) {
     let (app, _) = registered(pool).await;
     for _ in 0..5 {
         assert_eq!(
@@ -468,9 +538,10 @@ async fn reset_clears_login_failure_counter(pool: PgPool) {
     assert_eq!(
         login(&app, EMAIL, OLD_PASSWORD).await.status,
         StatusCode::TOO_MANY_REQUESTS,
-        "the email is locked before the reset"
+        "the (email, IP) pair is limited before the reset"
     );
 
+    // Requested and confirmed from the same (default) IP.
     let token = reset_token(&app, 1).await;
     assert_eq!(
         confirm(&app, &token, NEW_PASSWORD).await.status,
@@ -479,4 +550,37 @@ async fn reset_clears_login_failure_counter(pool: PgPool) {
 
     let res = login(&app, EMAIL, NEW_PASSWORD).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+}
+
+#[sqlx::test]
+async fn reset_clears_the_global_login_counter_but_not_other_ips_pairs(pool: PgPool) {
+    let (app, _) = registered(pool).await;
+    for n in 1..=10 {
+        for _ in 0..5 {
+            login_from(&app, client(n), EMAIL, "wrong-password").await;
+        }
+    }
+    assert_eq!(
+        login_from(&app, client(11), EMAIL, OLD_PASSWORD)
+            .await
+            .status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the email's global counter is full before the reset"
+    );
+
+    let token = reset_token(&app, 1).await;
+    assert_eq!(
+        confirm(&app, &token, NEW_PASSWORD).await.status,
+        StatusCode::NO_CONTENT
+    );
+
+    let res = login_from(&app, client(12), EMAIL, NEW_PASSWORD).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    // An attacker's own pair counter is kept.
+    assert_eq!(
+        login_from(&app, client(1), EMAIL, NEW_PASSWORD)
+            .await
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
 }

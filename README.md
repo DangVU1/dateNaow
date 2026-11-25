@@ -27,7 +27,8 @@ npm run dev                                 # http://localhost:5173, proxies /ap
   `cargo run --bin make_admin -- <email>`, then sign out and in again.
 
 Docker Compose is for local development only. Behind its published port every client
-appears to the backend with the same IP, so the per-IP login limits are shared; a real
+appears to the backend with the same IP, so the per-IP limits are shared and the
+per-(email, IP) limits act like per-email limits (one person can lock out another); a real
 deployment needs a reverse proxy that appends the client address and `TRUST_PROXY=true`.
 
 To run the backend with `cargo run` instead of Docker, start only the services it needs

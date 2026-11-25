@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::modules::auth::application::error::AuthError;
 use crate::modules::auth::application::login::LoginCommand;
 use crate::modules::auth::application::services::attempt_limiter::{
-    AttemptLimiter, LOGIN_ACTION, LOGIN_PER_EMAIL, LOGIN_PER_IP, LimitKey,
+    AttemptLimiter, LOGIN_ACTION, LOGIN_PER_EMAIL, LOGIN_PER_IP, LOGIN_PER_PAIR, LimitKey,
 };
 use crate::modules::auth::application::services::{PasswordHashService, Session, SessionService};
 use crate::modules::auth::domain::{AttemptRepository, PlainPassword, RefreshTokenRepository};
@@ -48,11 +48,17 @@ where
         };
 
         // 2. Record first, count second; over the limit means no password check.
-        let email_key = LimitKey::email(LOGIN_ACTION, &email, LOGIN_PER_EMAIL);
+        //    The email's global counter is reached only through the local
+        //    tier, so one address cannot fill it and lock the owner out (#13).
+        let pair_key = LimitKey::pair(LOGIN_ACTION, &email, cmd.client_ip, LOGIN_PER_PAIR);
         let ip_key = LimitKey::ip(LOGIN_ACTION, cmd.client_ip, LOGIN_PER_IP);
+        let email_key = LimitKey::email(LOGIN_ACTION, &email, LOGIN_PER_EMAIL);
         let ticket = self
             .limiter
-            .acquire(&[email_key.clone(), ip_key.clone()])
+            .acquire(&[
+                &[pair_key.clone(), ip_key.clone()],
+                std::slice::from_ref(&email_key),
+            ])
             .await?;
 
         let credentials = self
@@ -77,9 +83,11 @@ where
             return Err(AuthError::InvalidCredentials);
         }
 
-        // 5. Success: the email's failures are cleared, this attempt is not
+        // 5. Success: the email's global failures and this IP's pair failures
+        //    are cleared (other IPs' pairs stay), and this attempt is not
         //    counted against the IP.
         self.limiter.clear(&email_key).await;
+        self.limiter.clear(&pair_key).await;
         self.limiter.forgive(&ticket, &ip_key).await;
 
         // Loaded by id so the session carries the user as stored right now.

@@ -148,7 +148,7 @@ fn signed_in(state: &AppState, user: &User, session: &Session) -> (CookieJar, Js
         (status = 204, description = "Accepted. Sent whether or not the email has an account; if it has one, a reset link valid for RESET_TOKEN_TTL_MINS (default 30) minutes is emailed and earlier links stop working"),
         (status = 400, description = "Malformed JSON or unknown field", body = ErrorResponse),
         (status = 422, description = "Malformed email; see `fields.email`", body = ErrorResponse),
-        (status = 429, description = "`rate_limited` (3 per email, 10 per IP an hour), with `Retry-After` in seconds", body = ErrorResponse),
+        (status = 429, description = "`rate_limited` (an hour: 3 per email and IP, 10 per IP, 10 per email), with `Retry-After` in seconds", body = ErrorResponse),
     )
 )]
 pub async fn request_password_reset(
@@ -177,8 +177,13 @@ pub async fn request_password_reset(
 )]
 pub async fn confirm_password_reset(
     State(state): State<AppState>,
+    ClientIp(client_ip): ClientIp,
     ValidatedJson(body): ValidatedJson<PasswordResetConfirmRequest>,
 ) -> Result<StatusCode, ApiError> {
-    state.auth.confirm_reset.execute(body.into()).await?;
+    state
+        .auth
+        .confirm_reset
+        .execute(body.into_command(client_ip))
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

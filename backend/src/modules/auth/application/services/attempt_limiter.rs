@@ -1,13 +1,24 @@
-//! Failed-attempt limits for sign-in and password-reset requests (P5).
+//! Failed-attempt limits for sign-in and password-reset requests (P5, as
+//! amended by DECISIONS #13).
 //!
-//! An attempt is **recorded first and counted second**: each recorded row is
-//! committed before its count runs, so the i-th of many concurrent requests
-//! counts at least i rows and only the first `max` of them get through.
+//! Each action has three counters: one per (email, IP) pair, one per IP and
+//! one global counter per email. They are acquired in **tiers**: the local
+//! tier (pair + IP) first, and the global tier (email) only if the local tier
+//! let the attempt through. An attempt blocked locally therefore never reaches
+//! the email's global counter, so one IP (IPv6: one /64) can add at most
+//! `*_PER_PAIR.max` rows per window to it, and a stranger hammering from one
+//! address cannot lock the owner out.
 //!
-//! Keys are labels such as `login:email:an@example.com` or
-//! `login:ip:2001:db8:1:2::/64`. This module is the only place that hashes a
-//! label (SHA-256) before it reaches storage, so the counter table never holds
-//! a readable email or IP address.
+//! Within a tier an attempt is **recorded first and counted second**: each
+//! recorded row is committed before its count runs, so the i-th of many
+//! concurrent requests counts at least i rows and only the first `max` of
+//! them get through.
+//!
+//! Keys are labels such as `login:email:an@example.com`,
+//! `login:ip:2001:db8:1:2::/64` or `login:pair:an@example.com|203.0.113.7`.
+//! This module is the only place that hashes a label (SHA-256) before it
+//! reaches storage, so the counter table never holds a readable email or IP
+//! address.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr};
@@ -28,13 +39,14 @@ pub struct LimitPolicy {
     pub window: Duration,
 }
 
-/// Action prefix of the sign-in counter keys (`login:email:...`, `login:ip:...`).
+/// Action prefix of the sign-in counter keys (`login:pair:...`, `login:ip:...`,
+/// `login:email:...`).
 pub const LOGIN_ACTION: &str = "login";
 /// Action prefix of the password-reset request counter keys.
 pub const RESET_ACTION: &str = "reset";
 
-/// Sign-in: 5 attempts per email in 15 minutes.
-pub const LOGIN_PER_EMAIL: LimitPolicy = LimitPolicy {
+/// Sign-in: 5 attempts per (email, IP) pair in 15 minutes.
+pub const LOGIN_PER_PAIR: LimitPolicy = LimitPolicy {
     max: 5,
     window: Duration::minutes(15),
 };
@@ -43,13 +55,25 @@ pub const LOGIN_PER_IP: LimitPolicy = LimitPolicy {
     max: 20,
     window: Duration::minutes(15),
 };
-/// Password-reset requests: 3 per email in an hour.
-pub const RESET_PER_EMAIL: LimitPolicy = LimitPolicy {
+/// Sign-in: 50 attempts per email from all IPs together in 15 minutes. Bounds
+/// guessing spread over many addresses.
+pub const LOGIN_PER_EMAIL: LimitPolicy = LimitPolicy {
+    max: 50,
+    window: Duration::minutes(15),
+};
+/// Password-reset requests: 3 per (email, IP) pair in an hour.
+pub const RESET_PER_PAIR: LimitPolicy = LimitPolicy {
     max: 3,
     window: Duration::minutes(60),
 };
 /// Password-reset requests: 10 per IP address (IPv6: per /64) in an hour.
 pub const RESET_PER_IP: LimitPolicy = LimitPolicy {
+    max: 10,
+    window: Duration::minutes(60),
+};
+/// Password-reset requests: 10 per email from all IPs together in an hour.
+/// Bounds the reset emails one inbox can receive.
+pub const RESET_PER_EMAIL: LimitPolicy = LimitPolicy {
     max: 10,
     window: Duration::minutes(60),
 };
@@ -81,6 +105,18 @@ impl LimitKey {
     pub fn ip(action: &str, ip: IpAddr, policy: LimitPolicy) -> Self {
         Self {
             label: format!("{action}:ip:{}", ip_scope(ip)),
+            policy,
+        }
+    }
+
+    /// `"{action}:pair:{email}|{scope}"`, e.g.
+    /// `login:pair:an@example.com|203.0.113.7`, with the IP scope of
+    /// [`LimitKey::ip`]. The scope never contains `|`, so the last `|` always
+    /// splits the label unambiguously, and the `pair` kind keeps it apart from
+    /// `email` and `ip` labels.
+    pub fn pair(action: &str, email: &Email, ip: IpAddr, policy: LimitPolicy) -> Self {
+        Self {
+            label: format!("{action}:pair:{}|{}", email.as_str(), ip_scope(ip)),
             policy,
         }
     }
@@ -128,15 +164,29 @@ impl<A: AttemptRepository> AttemptLimiter<A> {
         Self { repo, clock }
     }
 
-    /// Records one attempt for every key, then counts each key's attempts in
-    /// its window (the new one included). If any key is over its `max`,
-    /// returns `RateLimited` with the longest window of the exceeded keys; the
-    /// recorded rows stay, because a blocked attempt is still an attempt.
-    pub async fn acquire(&self, keys: &[LimitKey]) -> Result<AttemptTicket, AuthError> {
+    /// Acquires `tiers` in order. For each tier, records one attempt for every
+    /// key, then counts each key's attempts in its window (the new one
+    /// included). If any key of the tier is over its `max`, returns
+    /// `RateLimited` with the longest window of that tier's exceeded keys and
+    /// **does not touch the later tiers**; the rows already recorded stay,
+    /// because a blocked attempt is still an attempt.
+    pub async fn acquire(&self, tiers: &[&[LimitKey]]) -> Result<AttemptTicket, AuthError> {
         let now = self.clock.now();
         self.prune(now).await;
 
-        let mut ids = Vec::with_capacity(keys.len());
+        let mut ids = Vec::with_capacity(tiers.iter().map(|tier| tier.len()).sum());
+        for tier in tiers {
+            self.acquire_tier(tier, now, &mut ids).await?;
+        }
+        Ok(AttemptTicket { ids })
+    }
+
+    async fn acquire_tier(
+        &self,
+        keys: &[LimitKey],
+        now: DateTime<Utc>,
+        ids: &mut Vec<(LimitKey, i64)>,
+    ) -> Result<(), AuthError> {
         for key in keys {
             let id = self
                 .repo
@@ -161,7 +211,7 @@ impl<A: AttemptRepository> AttemptLimiter<A> {
 
         match retry_after {
             Some(retry_after_secs) => Err(AuthError::RateLimited { retry_after_secs }),
-            None => Ok(AttemptTicket { ids }),
+            None => Ok(()),
         }
     }
 
@@ -287,7 +337,10 @@ mod tests {
         LimitKey::email(
             "login",
             &Email::parse("an@example.com").unwrap(),
-            LOGIN_PER_EMAIL,
+            LimitPolicy {
+                max: 5,
+                window: Duration::minutes(15),
+            },
         )
     }
 
@@ -353,26 +406,69 @@ mod tests {
     }
 
     #[test]
-    fn policies_match_p5_and_fit_the_prune_window() {
-        assert_eq!(
-            (LOGIN_PER_EMAIL.max, LOGIN_PER_EMAIL.window.num_minutes()),
-            (5, 15)
-        );
-        assert_eq!(
-            (LOGIN_PER_IP.max, LOGIN_PER_IP.window.num_minutes()),
-            (20, 15)
-        );
-        assert_eq!(
-            (RESET_PER_EMAIL.max, RESET_PER_EMAIL.window.num_minutes()),
-            (3, 60)
-        );
-        assert_eq!(
-            (RESET_PER_IP.max, RESET_PER_IP.window.num_minutes()),
-            (10, 60)
-        );
-        for policy in [LOGIN_PER_EMAIL, LOGIN_PER_IP, RESET_PER_EMAIL, RESET_PER_IP] {
+    fn policies_match_decision_13_and_fit_the_prune_window() {
+        let minutes = |p: LimitPolicy| (p.max, p.window.num_minutes());
+        assert_eq!(minutes(LOGIN_PER_PAIR), (5, 15));
+        assert_eq!(minutes(LOGIN_PER_IP), (20, 15));
+        assert_eq!(minutes(LOGIN_PER_EMAIL), (50, 15));
+        assert_eq!(minutes(RESET_PER_PAIR), (3, 60));
+        assert_eq!(minutes(RESET_PER_IP), (10, 60));
+        assert_eq!(minutes(RESET_PER_EMAIL), (10, 60));
+        for policy in [
+            LOGIN_PER_PAIR,
+            LOGIN_PER_IP,
+            LOGIN_PER_EMAIL,
+            RESET_PER_PAIR,
+            RESET_PER_IP,
+            RESET_PER_EMAIL,
+        ] {
             assert!(policy.window <= PRUNE_AFTER);
         }
+    }
+
+    #[test]
+    fn pair_key_joins_normalised_email_and_ip_scope() {
+        let email = Email::parse(" An@Example.com ").unwrap();
+        let v4 = LimitKey::pair("login", &email, ip("::ffff:203.0.113.7"), LOGIN_PER_PAIR);
+        assert_eq!(v4.label, "login:pair:an@example.com|203.0.113.7");
+        let v6 = LimitKey::pair("reset", &email, ip("2001:db8:1:2::9"), RESET_PER_PAIR);
+        assert_eq!(v6.label, "reset:pair:an@example.com|2001:db8:1:2::/64");
+        assert_eq!(
+            v6,
+            LimitKey::pair("reset", &email, ip("2001:db8:1:2::1"), RESET_PER_PAIR),
+            "one /64 is one pair"
+        );
+    }
+
+    #[test]
+    fn pair_key_is_counted_apart_from_other_kinds_and_pairs() {
+        let email = Email::parse("an@example.com").unwrap();
+        let other = Email::parse("bo@example.com").unwrap();
+        let addr = ip("203.0.113.7");
+        let pair = LimitKey::pair("login", &email, addr, LOGIN_PER_PAIR);
+        for different in [
+            LimitKey::pair("reset", &email, addr, RESET_PER_PAIR),
+            LimitKey::pair("login", &other, addr, LOGIN_PER_PAIR),
+            LimitKey::pair("login", &email, ip("203.0.113.8"), LOGIN_PER_PAIR),
+            LimitKey::email("login", &email, LOGIN_PER_EMAIL),
+            LimitKey::ip("login", addr, LOGIN_PER_IP),
+        ] {
+            assert_ne!(pair.hash(), different.hash(), "{}", different.label);
+        }
+    }
+
+    #[test]
+    fn debug_hides_email_and_address_of_a_pair() {
+        let key = LimitKey::pair(
+            "login",
+            &Email::parse("an@example.com").unwrap(),
+            ip("203.0.113.7"),
+            LOGIN_PER_PAIR,
+        );
+        let debug = format!("{key:?}");
+        assert!(!debug.contains("an@example.com"), "{debug}");
+        assert!(!debug.contains("203.0.113.7"), "{debug}");
+        assert!(debug.contains("login:pair:***"), "{debug}");
     }
 
     #[tokio::test]
@@ -380,9 +476,9 @@ mod tests {
         let (limiter, repo, _) = limiter();
         let keys = [email_key()];
         for _ in 0..5 {
-            assert!(limiter.acquire(&keys).await.is_ok());
+            assert!(limiter.acquire(&[&keys]).await.is_ok());
         }
-        let err = limiter.acquire(&keys).await.unwrap_err();
+        let err = limiter.acquire(&[&keys]).await.unwrap_err();
         assert!(
             matches!(
                 err,
@@ -412,7 +508,7 @@ mod tests {
                 window: Duration::minutes(60),
             },
         };
-        let err = limiter.acquire(&[short, long]).await.unwrap_err();
+        let err = limiter.acquire(&[&[short, long]]).await.unwrap_err();
         assert!(
             matches!(
                 err,
@@ -429,7 +525,7 @@ mod tests {
         let (limiter, repo, _) = limiter();
         let ip_key = LimitKey::ip("login", ip("203.0.113.7"), LOGIN_PER_IP);
         let ticket = limiter
-            .acquire(&[email_key(), ip_key.clone()])
+            .acquire(&[&[email_key(), ip_key.clone()]])
             .await
             .unwrap();
 
@@ -444,7 +540,7 @@ mod tests {
     async fn clear_removes_every_row_of_the_key() {
         let (limiter, repo, _) = limiter();
         for _ in 0..3 {
-            limiter.acquire(&[email_key()]).await.unwrap();
+            limiter.acquire(&[&[email_key()]]).await.unwrap();
         }
         limiter.clear(&email_key()).await;
         assert!(repo.rows.lock().unwrap().is_empty());
@@ -454,14 +550,109 @@ mod tests {
     async fn attempts_outside_the_window_do_not_count_and_are_pruned() {
         let (limiter, repo, clock) = limiter();
         for _ in 0..5 {
-            limiter.acquire(&[email_key()]).await.unwrap();
+            limiter.acquire(&[&[email_key()]]).await.unwrap();
         }
         *clock.0.lock().unwrap() = t0() + Duration::minutes(15) + Duration::seconds(1);
-        assert!(limiter.acquire(&[email_key()]).await.is_ok());
+        assert!(limiter.acquire(&[&[email_key()]]).await.is_ok());
 
         *clock.0.lock().unwrap() = t0() + Duration::minutes(61);
-        limiter.acquire(&[email_key()]).await.unwrap();
+        limiter.acquire(&[&[email_key()]]).await.unwrap();
         // The five rows at t0 are older than 60 minutes and were deleted.
         assert_eq!(repo.rows.lock().unwrap().len(), 2);
+    }
+
+    fn key(label: &str, max: i64) -> LimitKey {
+        LimitKey {
+            label: label.into(),
+            policy: LimitPolicy {
+                max,
+                window: Duration::minutes(15),
+            },
+        }
+    }
+
+    fn rows_of(repo: &MemoryRepo, key: &LimitKey) -> usize {
+        let hash = key.hash();
+        repo.rows
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, k, _)| *k == hash)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn blocked_local_tier_records_nothing_on_the_global_tier() {
+        let (limiter, repo, _) = limiter();
+        let local = key("pair", 2);
+        let global = key("email", 100);
+        for _ in 0..2 {
+            limiter
+                .acquire(&[std::slice::from_ref(&local), std::slice::from_ref(&global)])
+                .await
+                .unwrap();
+        }
+        for _ in 0..10 {
+            let err = limiter
+                .acquire(&[std::slice::from_ref(&local), std::slice::from_ref(&global)])
+                .await
+                .unwrap_err();
+            assert!(matches!(err, AuthError::RateLimited { .. }), "{err:?}");
+        }
+        // Every local attempt is recorded; only the two that passed reached
+        // the global counter.
+        assert_eq!(rows_of(&repo, &local), 12);
+        assert_eq!(rows_of(&repo, &global), 2);
+    }
+
+    #[tokio::test]
+    async fn global_tier_limits_after_the_local_tier_passes() {
+        let (limiter, repo, _) = limiter();
+        let global = key("email", 3);
+        for i in 0..3 {
+            let local = key(&format!("pair{i}"), 5);
+            limiter
+                .acquire(&[&[local], std::slice::from_ref(&global)])
+                .await
+                .unwrap();
+        }
+        let fresh_local = key("pair-fresh", 5);
+        let err = limiter
+            .acquire(&[
+                std::slice::from_ref(&fresh_local),
+                std::slice::from_ref(&global),
+            ])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AuthError::RateLimited {
+                    retry_after_secs: 900
+                }
+            ),
+            "{err:?}"
+        );
+        // A blocked attempt is still recorded on both tiers it reached.
+        assert_eq!(rows_of(&repo, &fresh_local), 1);
+        assert_eq!(rows_of(&repo, &global), 4);
+    }
+
+    #[tokio::test]
+    async fn forgive_reaches_rows_of_every_tier() {
+        let (limiter, repo, _) = limiter();
+        let local = key("pair", 5);
+        let global = key("email", 5);
+        let ticket = limiter
+            .acquire(&[std::slice::from_ref(&local), std::slice::from_ref(&global)])
+            .await
+            .unwrap();
+
+        limiter.forgive(&ticket, &global).await;
+        assert_eq!(rows_of(&repo, &global), 0);
+        assert_eq!(rows_of(&repo, &local), 1);
+
+        limiter.forgive(&ticket, &local).await;
+        assert!(repo.rows.lock().unwrap().is_empty());
     }
 }
