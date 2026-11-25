@@ -19,10 +19,9 @@ Rules for reading the spec:
 
 ### 0.2 Current state
 
-- No application code yet. The repository contains only `.claude/` and `docs/`.
-- Commits so far: the initial `.claude/` + draft spec, then the approved spec, decision log and implementation plans (2026-11-25). Nothing pushed.
-- Stack versions are not pinned yet (see §2).
-- Implementation is split into four plans (`docs/DECISIONS.md` #5). Roadmap: `docs/superpowers/plans/2026-11-25-datenaow-roadmap.md`. Plan 1 (foundation + accounts) is approved (`docs/DECISIONS.md` #9) and will be executed subagent-driven (#10). Plan file: `docs/superpowers/plans/2026-11-25-plan-1-foundation-accounts.md`.
+- Plan 1 (foundation + accounts) is implemented on branch `feat/plan-1-foundation-accounts` (not pushed, not merged): backend `auth`, `users` and the `admin` guard (register, login with attempt limits, refresh rotation with reuse detection, logout, `/me` and gender, password reset via Mailpit, `make_admin` CLI, Dockerfile and compose); frontend scaffold, API client with in-memory access token and single-flight refresh, sign-in/sign-up, forgot/reset password, gender settings and `/admin` placeholder. How to run it: `README.md`.
+- Stack versions are pinned (§2.4).
+- Implementation is split into four plans (`docs/DECISIONS.md` #5). Roadmap: `docs/superpowers/plans/2026-11-25-datenaow-roadmap.md`. Plan 1 file: `docs/superpowers/plans/2026-11-25-plan-1-foundation-accounts.md` (approved #9, executed subagent-driven #10). Plans 2–4 are not written in detail yet.
 
 Update this section when the state changes materially (scaffolding done, first release, etc.).
 

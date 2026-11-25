@@ -1,0 +1,4 @@
+# Local secrets: never commit an .env file at any level.
+.env
+.env.*
+!.env.example

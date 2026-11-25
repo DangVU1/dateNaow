@@ -111,3 +111,11 @@ Each entry: date, decision, rationale, and source. Superseded entries stay in pl
 - **Options considered:** approve it (chosen); drop React Testing Library, which would change #6.
 - **Rationale:** `@testing-library/react` 16.3.3, `@testing-library/user-event` 14.6.13 and `@testing-library/jest-dom` 8.0.0 (approved in #6 / P13) all declare it as a required peer dependency, so the approved test stack does not work without it. It is MIT-licensed and maintained by the same project. Found in plan 1, Task 11.
 - **Source:** owner's approval in chat on 2026-11-25.
+
+## #12 — TypeScript 6.0.3 instead of 7.0.2 (version fallback)
+
+- **Date:** 2026-11-25
+- **Decision:** pin `typescript@6.0.3` in `frontend/` instead of the planned 7.0.2.
+- **Options considered:** TypeScript 7.0.2 (planned); 6.0.3, the newest version typescript-eslint supports (chosen).
+- **Rationale:** `typescript-eslint` 8.74.0 declares the peer range `typescript >=4.8.4 <6.1.0`, so TS 7 would break type-aware linting. This applies the version fallback pre-approved in plan 1 ("Phiên bản và phụ thuộc"); no new approval was needed. Revisit when typescript-eslint supports TS 7.
+- **Source:** plan 1, Task 11; recorded in `.claude/CLAUDE.md` §2.4.
