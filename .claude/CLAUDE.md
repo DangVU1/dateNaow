@@ -156,7 +156,31 @@ Backend versions verified on 2026-11-25 (plan 1, Task 1) with `cargo search` / `
 | Rust build image (backend Dockerfile) | `rust:1.100.0-slim-trixie` (Debian 13.8; verified 2026-11-25, plan 1 Task 10) | | |
 | Debian runtime image (backend Dockerfile) | `debian:trixie-20261123-slim` (dated snapshot of Debian 13.8 `trixie-slim`; verified 2026-11-25) | | |
 
-Frontend versions are verified and recorded here in plan 1, Task 11.
+Frontend versions verified on 2026-11-25 (plan 1, Task 11) with `npm view`. Packages are pinned exactly (`--save-exact`) in `frontend/package.json`; `package-lock.json` is committed. Toolchain: Node.js 24.18.0, npm 11.16.0 (`"engines": { "node": ">=24" }`, `.nvmrc` = `24`).
+
+| Package | Version | Kind | Note |
+|---|---|---|---|
+| react / react-dom | 19.3.1 / 19.3.1 | dependency | |
+| react-router | 8.5.3 | dependency | declarative mode only |
+| @tanstack/react-query | 5.108.4 | dependency | |
+| vite | 8.3.8 | dev | |
+| @vitejs/plugin-react | 6.3.0 | dev | |
+| typescript | 6.0.3 | dev | not 7.0.2: typescript-eslint 8.74.0 has peer `typescript >=4.8.4 <6.1.0` (plan 1 fallback: latest TS that typescript-eslint supports) |
+| @types/react / @types/react-dom | 19.3.2 / 19.3.0 | dev | |
+| vitest | 5.1.1 | dev | |
+| jsdom | 31.0.1 | dev | |
+| @testing-library/react | 16.3.3 | dev | |
+| @testing-library/user-event | 14.6.13 | dev | |
+| @testing-library/jest-dom | 8.0.0 | dev | |
+| @testing-library/dom | 10.4.2 | dev | required peer of the three packages above (`docs/DECISIONS.md` #11) |
+| eslint | 10.15.0 | dev | |
+| @eslint/js | 10.0.1 | dev | |
+| typescript-eslint | 8.74.0 | dev | |
+| eslint-plugin-react-hooks | 7.1.1 | dev | |
+| eslint-plugin-react-refresh | 0.5.8 | dev | |
+| eslint-config-prettier | 10.1.8 | dev | |
+| globals | 17.14.0 | dev | |
+| prettier | 3.10.1 | dev | |
 
 If a new major version's API differs from the plan and cannot be fixed within the task, pin the previous stable major instead and record the reason here (plan 1, "Phiên bản và phụ thuộc").
 
@@ -765,7 +789,15 @@ cargo test
 cargo build
 ```
 
-Frontend commands (lint, type check, test, build) are defined when the frontend is scaffolded; record them here at that point.
+Frontend, from `frontend/`:
+
+```bash
+npm run lint          # eslint . (type-aware typescript-eslint rules)
+npm run format:check  # prettier --check . (npm run format to fix)
+npm run typecheck     # tsc -b --noEmit
+npm test              # vitest run
+npm run build         # tsc -b && vite build
+```
 
 Use commands appropriate to the actual project configuration.
 
@@ -833,6 +865,7 @@ Only spec-backed rules are listed here. Extend this section after the frontend s
 - The admin area lives in the same app under `/admin`.
 - Never render data the current user is not allowed to see, even if hidden by CSS — the API must not send it in the first place (§0.3).
 - After a WebSocket reconnect, reload the full date-plan state from the API; PostgreSQL is the source of truth (spec §8).
+- Tests sit next to the file they test as `*.test.ts(x)`. Vitest runs with `globals: true`, so tests use `test`/`expect`/`vi` without importing them; shared render helpers live in `src/test/`.
 
 ---
 

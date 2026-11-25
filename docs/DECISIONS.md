@@ -103,3 +103,11 @@ Each entry: date, decision, rationale, and source. Superseded entries stay in pl
 - **Rationale:** the tasks depend tightly on each other's interfaces, and the authentication code is security-sensitive, so catching mistakes task by task is worth the extra cost.
 - **Source:** owner's choice on 2026-11-25.
 - **Addendum (2026-11-25):** the Superpowers plugin (`superpowers:subagent-driven-development`) is not available in the executing session, so the owner chose to run the same pattern by hand: the main agent launches one implementer subagent per task, then a separate reviewer subagent, and integrates and commits itself. For plan 1 this is a deliberate exception to the global rule that only the main agent edits files.
+
+## #11 — Extra frontend dev dependency: @testing-library/dom
+
+- **Date:** 2026-11-25
+- **Decision:** add `@testing-library/dom@10.4.2` as an exact-pinned devDependency of `frontend/`.
+- **Options considered:** approve it (chosen); drop React Testing Library, which would change #6.
+- **Rationale:** `@testing-library/react` 16.3.3, `@testing-library/user-event` 14.6.13 and `@testing-library/jest-dom` 8.0.0 (approved in #6 / P13) all declare it as a required peer dependency, so the approved test stack does not work without it. It is MIT-licensed and maintained by the same project. Found in plan 1, Task 11.
+- **Source:** owner's approval in chat on 2026-11-25.
