@@ -1,9 +1,17 @@
-//! Auth application layer: the module's error type, the services shared by
-//! the auth use cases, and the use cases themselves.
+//! Auth application layer: the module's error type, its ports, the services
+//! shared by the auth use cases, and the use cases themselves.
 
+pub mod confirm_password_reset;
 pub mod error;
 pub mod login;
 pub mod register;
+pub mod request_password_reset;
+
+pub mod ports {
+    pub mod email_sender;
+
+    pub use email_sender::{EmailSender, OutgoingEmail, SendEmailError};
+}
 
 pub mod services {
     pub mod attempt_limiter;

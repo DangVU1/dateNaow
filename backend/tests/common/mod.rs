@@ -5,7 +5,10 @@
 //! are silenced for this file only.
 #![allow(dead_code)]
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,9 +21,11 @@ use chrono::{DateTime, Utc};
 use http_body_util::BodyExt;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use tokio::sync::Notify;
 use tower::ServiceExt;
 
 use datenaow::config::Config;
+use datenaow::modules::auth::application::ports::{EmailSender, OutgoingEmail, SendEmailError};
 use datenaow::routes::with_middleware;
 use datenaow::shared::clock::Clock;
 use datenaow::{AppState, build_router};
@@ -45,6 +50,90 @@ pub fn test_config() -> Config {
         argon2_parallelism: 1,
         cookie_secure: false,
         trust_proxy: false,
+        smtp_host: "unused-in-tests".to_owned(),
+        smtp_port: 1025,
+        smtp_from: "dateNaow <no-reply@datenaow.local>".to_owned(),
+        reset_token_ttl_mins: 30,
+    }
+}
+
+/// Longest time `FakeMailer::wait_for` waits for background sends.
+const MAIL_WAIT: Duration = Duration::from_secs(2);
+
+/// An `EmailSender` that keeps every email in memory. Emails are sent from a
+/// background task, so tests wait for them with `wait_for`.
+#[derive(Debug, Default)]
+pub struct FakeMailer {
+    sent: Mutex<Vec<OutgoingEmail>>,
+    attempts: AtomicUsize,
+    fail: AtomicBool,
+    notify: Notify,
+}
+
+impl FakeMailer {
+    /// Every email sent so far.
+    pub fn sent(&self) -> Vec<OutgoingEmail> {
+        self.sent
+            .lock()
+            .expect("fake mailer mutex poisoned")
+            .clone()
+    }
+
+    /// Waits up to 2 seconds until at least `n` emails were sent, then returns
+    /// all of them (possibly fewer than `n` on timeout).
+    pub async fn wait_for(&self, n: usize) -> Vec<OutgoingEmail> {
+        self.wait_until(|| self.sent().len() >= n).await;
+        self.sent()
+    }
+
+    /// Waits up to 2 seconds until at least `n` sends were attempted
+    /// (successful or not), then returns the number of attempts.
+    pub async fn wait_for_attempts(&self, n: usize) -> usize {
+        self.wait_until(|| self.attempts.load(Ordering::SeqCst) >= n)
+            .await;
+        self.attempts.load(Ordering::SeqCst)
+    }
+
+    /// Makes every later send fail.
+    pub fn fail_sends(&self, fail: bool) {
+        self.fail.store(fail, Ordering::SeqCst);
+    }
+
+    async fn wait_until(&self, done: impl Fn() -> bool) {
+        let deadline = tokio::time::Instant::now() + MAIL_WAIT;
+        loop {
+            // Created before the check, and `notify_waiters` wakes every
+            // future created earlier, so a send in between is not missed.
+            let notified = self.notify.notified();
+            if done() {
+                return;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+impl EmailSender for FakeMailer {
+    fn send(
+        &self,
+        email: OutgoingEmail,
+    ) -> Pin<Box<dyn Future<Output = Result<(), SendEmailError>> + Send + '_>> {
+        Box::pin(async move {
+            let result = if self.fail.load(Ordering::SeqCst) {
+                Err(SendEmailError::Delivery("fake failure"))
+            } else {
+                self.sent
+                    .lock()
+                    .expect("fake mailer mutex poisoned")
+                    .push(email);
+                Ok(())
+            };
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            self.notify.notify_waiters();
+            result
+        })
     }
 }
 
@@ -94,10 +183,20 @@ impl Clock for FakeClock {
     }
 }
 
+/// The real `AppState` with a fake clock and a fake mailer.
+fn test_state(pool: PgPool, config: Config) -> (AppState, Arc<FakeClock>, Arc<FakeMailer>) {
+    let clock = Arc::new(FakeClock::default());
+    let mailer = Arc::new(FakeMailer::default());
+    let state =
+        AppState::new(config, pool, clock.clone(), mailer.clone()).expect("build app state");
+    (state, clock, mailer)
+}
+
 /// The application router wired to a test database, called in-process.
 pub struct TestApp {
     router: Router,
     pub clock: Arc<FakeClock>,
+    pub mailer: Arc<FakeMailer>,
 }
 
 impl TestApp {
@@ -106,20 +205,26 @@ impl TestApp {
     }
 
     pub fn with_config(pool: PgPool, config: Config) -> Self {
-        let clock = Arc::new(FakeClock::default());
-        let state = AppState::new(config, pool, clock.clone()).expect("build app state");
+        let (state, clock, mailer) = test_state(pool, config);
         let router = build_router(state).layer(MockConnectInfo(SocketAddr::from(TEST_PEER_ADDR)));
-        Self { router, clock }
+        Self {
+            router,
+            clock,
+            mailer,
+        }
     }
 
     /// Mounts test-only `routes` (at the root, not under `/api/v1`) on the
     /// real middleware stack, e.g. to probe extractors or the timeout.
     pub fn with_routes(pool: PgPool, config: Config, routes: Router<AppState>) -> Self {
-        let clock = Arc::new(FakeClock::default());
-        let state = AppState::new(config, pool, clock.clone()).expect("build app state");
+        let (state, clock, mailer) = test_state(pool, config);
         let router =
             with_middleware(routes, state).layer(MockConnectInfo(SocketAddr::from(TEST_PEER_ADDR)));
-        Self { router, clock }
+        Self {
+            router,
+            clock,
+            mailer,
+        }
     }
 
     pub fn get(&self, path: &str) -> TestRequest {

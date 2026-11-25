@@ -28,6 +28,11 @@ pub struct LimitPolicy {
     pub window: Duration,
 }
 
+/// Action prefix of the sign-in counter keys (`login:email:...`, `login:ip:...`).
+pub const LOGIN_ACTION: &str = "login";
+/// Action prefix of the password-reset request counter keys.
+pub const RESET_ACTION: &str = "reset";
+
 /// Sign-in: 5 attempts per email in 15 minutes.
 pub const LOGIN_PER_EMAIL: LimitPolicy = LimitPolicy {
     max: 5,

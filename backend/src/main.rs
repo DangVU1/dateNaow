@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use datenaow::config::Config;
+use datenaow::infrastructure::email::SmtpEmailSender;
 use datenaow::infrastructure::{db, telemetry};
 use datenaow::shared::clock::SystemClock;
 use datenaow::{AppState, build_router};
@@ -25,8 +26,11 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to run database migrations")?;
     tracing::info!("database migrations applied");
 
+    let mailer = SmtpEmailSender::new(&config.smtp_host, config.smtp_port, &config.smtp_from)
+        .context("failed to configure the SMTP sender")?;
+
     let bind_addr = config.bind_addr;
-    let state = AppState::new(config, db, Arc::new(SystemClock))
+    let state = AppState::new(config, db, Arc::new(SystemClock), Arc::new(mailer))
         .context("failed to build application state")?;
     let router = build_router(state);
 

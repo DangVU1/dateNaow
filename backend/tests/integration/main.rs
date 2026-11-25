@@ -10,4 +10,5 @@ mod errors;
 mod health;
 mod me_and_admin;
 mod openapi;
+mod password_reset;
 mod users_repository;

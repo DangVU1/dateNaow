@@ -12,4 +12,12 @@ pub fn routes() -> Router<AppState> {
         .route("/login", post(handlers::login))
         .route("/refresh", post(handlers::refresh))
         .route("/logout", post(handlers::logout))
+        .route(
+            "/password-reset/request",
+            post(handlers::request_password_reset),
+        )
+        .route(
+            "/password-reset/confirm",
+            post(handlers::confirm_password_reset),
+        )
 }

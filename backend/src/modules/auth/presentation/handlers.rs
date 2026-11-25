@@ -11,7 +11,9 @@ use crate::modules::auth::application::services::Session;
 use crate::modules::auth::presentation::cookies::{
     REFRESH_COOKIE, clear_refresh_cookie, refresh_cookie,
 };
-use crate::modules::auth::presentation::dto::{AuthResponse, LoginRequest, RegisterRequest};
+use crate::modules::auth::presentation::dto::{
+    AuthResponse, LoginRequest, PasswordResetConfirmRequest, PasswordResetRequest, RegisterRequest,
+};
 use crate::modules::users::domain::User;
 use crate::shared::client_ip::ClientIp;
 use crate::shared::error::{ApiError, ErrorResponse};
@@ -135,4 +137,48 @@ fn signed_in(state: &AppState, user: &User, session: &Session) -> (CookieJar, Js
         CookieJar::new().add(cookie),
         Json(AuthResponse::new(user, session)),
     )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/password-reset/request",
+    tag = "auth",
+    request_body = PasswordResetRequest,
+    responses(
+        (status = 204, description = "Accepted. Sent whether or not the email has an account; if it has one, a reset link valid for RESET_TOKEN_TTL_MINS (default 30) minutes is emailed and earlier links stop working"),
+        (status = 400, description = "Malformed JSON or unknown field", body = ErrorResponse),
+        (status = 422, description = "Malformed email; see `fields.email`", body = ErrorResponse),
+        (status = 429, description = "`rate_limited` (3 per email, 10 per IP an hour), with `Retry-After` in seconds", body = ErrorResponse),
+    )
+)]
+pub async fn request_password_reset(
+    State(state): State<AppState>,
+    ClientIp(client_ip): ClientIp,
+    ValidatedJson(body): ValidatedJson<PasswordResetRequest>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .auth
+        .request_reset
+        .execute(body.into_command(client_ip))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/password-reset/confirm",
+    tag = "auth",
+    request_body = PasswordResetConfirmRequest,
+    responses(
+        (status = 204, description = "Password changed; every refresh token of the user is revoked"),
+        (status = 400, description = "`invalid_or_expired_token`: malformed, unknown, used or expired token; or malformed JSON (`invalid_json`)", body = ErrorResponse),
+        (status = 422, description = "Invalid new password; see `fields.new_password`. The token stays usable", body = ErrorResponse),
+    )
+)]
+pub async fn confirm_password_reset(
+    State(state): State<AppState>,
+    ValidatedJson(body): ValidatedJson<PasswordResetConfirmRequest>,
+) -> Result<StatusCode, ApiError> {
+    state.auth.confirm_reset.execute(body.into()).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

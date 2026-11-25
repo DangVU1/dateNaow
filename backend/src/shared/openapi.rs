@@ -6,7 +6,9 @@ use axum::Json;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
-use crate::modules::auth::presentation::dto::{AuthResponse, LoginRequest, RegisterRequest};
+use crate::modules::auth::presentation::dto::{
+    AuthResponse, LoginRequest, PasswordResetConfirmRequest, PasswordResetRequest, RegisterRequest,
+};
 use crate::modules::auth::presentation::handlers as auth;
 use crate::modules::users::presentation::dto::{UpdateMeRequest, UserResponse};
 use crate::modules::users::presentation::handlers as users;
@@ -22,6 +24,8 @@ use crate::shared::health;
         auth::login,
         auth::refresh,
         auth::logout,
+        auth::request_password_reset,
+        auth::confirm_password_reset,
         users::get_current_user,
         users::update_gender
     ),
@@ -30,6 +34,8 @@ use crate::shared::health;
         ErrorBody,
         RegisterRequest,
         LoginRequest,
+        PasswordResetRequest,
+        PasswordResetConfirmRequest,
         AuthResponse,
         UserResponse,
         UpdateMeRequest

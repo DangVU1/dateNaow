@@ -20,6 +20,14 @@ const DEFAULT_REFRESH_TOKEN_TTL_DAYS: i64 = 30;
 /// Upper bound for the refresh-token lifetime (one year), so
 /// `chrono::Duration::days` and `now + ttl` cannot overflow.
 const MAX_REFRESH_TOKEN_TTL_DAYS: i64 = 365;
+/// Default SMTP server: Mailpit on the same machine (P6).
+const DEFAULT_SMTP_HOST: &str = "localhost";
+const DEFAULT_SMTP_PORT: u16 = 1025;
+const DEFAULT_SMTP_FROM: &str = "dateNaow <no-reply@datenaow.local>";
+/// Default password-reset link lifetime: 30 minutes (P6).
+const DEFAULT_RESET_TOKEN_TTL_MINS: i64 = 30;
+/// Upper bound for the reset link lifetime (one day).
+const MAX_RESET_TOKEN_TTL_MINS: i64 = 1_440;
 
 /// Runtime configuration. `Debug` is written by hand so secrets never reach logs.
 #[derive(Clone)]
@@ -48,6 +56,14 @@ pub struct Config {
     /// Read the client address from `X-Forwarded-For` (P5). Turn on only
     /// behind a reverse proxy that sets it. Default `false`.
     pub trust_proxy: bool,
+    /// SMTP server for the password-reset email. Default `localhost`.
+    pub smtp_host: String,
+    /// Default 1025 (Mailpit).
+    pub smtp_port: u16,
+    /// Sender mailbox. Default `dateNaow <no-reply@datenaow.local>`.
+    pub smtp_from: String,
+    /// Password-reset link lifetime in minutes (P6). Default 30.
+    pub reset_token_ttl_mins: i64,
 }
 
 impl Config {
@@ -130,6 +146,21 @@ impl Config {
             )?,
             cookie_secure: flag("COOKIE_SECURE", true)?,
             trust_proxy: flag("TRUST_PROXY", false)?,
+            smtp_host: optional_text(&lookup, "SMTP_HOST", DEFAULT_SMTP_HOST),
+            smtp_port: optional_number(&lookup, "SMTP_PORT", DEFAULT_SMTP_PORT, |n: &u16| *n > 0)
+                .ok_or_else(|| anyhow!("SMTP_PORT must be a port number from 1 to 65535"))?,
+            smtp_from: optional_text(&lookup, "SMTP_FROM", DEFAULT_SMTP_FROM),
+            reset_token_ttl_mins: optional_number(
+                &lookup,
+                "RESET_TOKEN_TTL_MINS",
+                DEFAULT_RESET_TOKEN_TTL_MINS,
+                |n: &i64| (1..=MAX_RESET_TOKEN_TTL_MINS).contains(n),
+            )
+            .ok_or_else(|| {
+                anyhow!(
+                    "RESET_TOKEN_TTL_MINS must be a whole number from 1 to {MAX_RESET_TOKEN_TTL_MINS}"
+                )
+            })?,
         };
         // Reject parameters Argon2 would refuse now, not at the first sign-up.
         config.argon2_params()?;
@@ -164,6 +195,14 @@ fn optional_number<T: std::str::FromStr>(
     }
 }
 
+/// An optional text variable, trimmed; a missing or blank value gives `default`.
+fn optional_text(lookup: &impl Fn(&str) -> Option<String>, key: &str, default: &str) -> String {
+    lookup(key)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default.to_owned())
+}
+
 /// Parses an optional boolean variable (`true`/`false`, `1`/`0`, any case).
 /// A missing or blank value gives `default`; `None` means it is unparsable.
 fn optional_bool(
@@ -196,6 +235,10 @@ impl fmt::Debug for Config {
             .field("argon2_parallelism", &self.argon2_parallelism)
             .field("cookie_secure", &self.cookie_secure)
             .field("trust_proxy", &self.trust_proxy)
+            .field("smtp_host", &self.smtp_host)
+            .field("smtp_port", &self.smtp_port)
+            .field("smtp_from", &self.smtp_from)
+            .field("reset_token_ttl_mins", &self.reset_token_ttl_mins)
             .finish()
     }
 }
@@ -283,6 +326,45 @@ mod tests {
         .unwrap();
         assert!(!config.cookie_secure);
         assert!(config.trust_proxy);
+    }
+
+    #[test]
+    fn email_settings_default() {
+        let config = Config::from_lookup(lookup_from(&minimal_with(&[]))).unwrap();
+        assert_eq!(config.smtp_host, "localhost");
+        assert_eq!(config.smtp_port, 1025);
+        assert_eq!(config.smtp_from, "dateNaow <no-reply@datenaow.local>");
+        assert_eq!(config.reset_token_ttl_mins, 30);
+    }
+
+    #[test]
+    fn reads_email_settings() {
+        let config = Config::from_lookup(lookup_from(&minimal_with(&[
+            ("SMTP_HOST", " mailpit "),
+            ("SMTP_PORT", "2525"),
+            ("SMTP_FROM", "Test <t@example.com>"),
+            ("RESET_TOKEN_TTL_MINS", "60"),
+        ])))
+        .unwrap();
+        assert_eq!(config.smtp_host, "mailpit");
+        assert_eq!(config.smtp_port, 2525);
+        assert_eq!(config.smtp_from, "Test <t@example.com>");
+        assert_eq!(config.reset_token_ttl_mins, 60);
+    }
+
+    #[test]
+    fn invalid_email_settings_are_an_error() {
+        for (key, value) in [
+            ("SMTP_PORT", "0"),
+            ("SMTP_PORT", "65536"),
+            ("SMTP_PORT", "abc"),
+            ("RESET_TOKEN_TTL_MINS", "0"),
+            ("RESET_TOKEN_TTL_MINS", "-1"),
+            ("RESET_TOKEN_TTL_MINS", "1441"),
+        ] {
+            let result = Config::from_lookup(lookup_from(&minimal_with(&[(key, value)])));
+            assert!(result.is_err(), "{key}={value} should be rejected");
+        }
     }
 
     #[test]

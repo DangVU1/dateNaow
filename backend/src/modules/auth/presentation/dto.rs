@@ -10,8 +10,10 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
 
+use crate::modules::auth::application::confirm_password_reset::ConfirmPasswordResetCommand;
 use crate::modules::auth::application::login::LoginCommand;
 use crate::modules::auth::application::register::RegisterCommand;
+use crate::modules::auth::application::request_password_reset::RequestPasswordResetCommand;
 use crate::modules::auth::application::services::Session;
 use crate::modules::users::domain::User;
 use crate::modules::users::presentation::dto::UserResponse;
@@ -103,5 +105,77 @@ impl fmt::Debug for AuthResponse {
             .field("expires_in", &self.expires_in)
             .field("user", &self.user)
             .finish()
+    }
+}
+
+#[derive(Deserialize, Validate, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PasswordResetRequest {
+    #[schema(example = "an@example.com")]
+    pub email: String,
+}
+
+#[derive(Deserialize, Validate, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PasswordResetConfirmRequest {
+    /// The token from the reset link, after `#token=`.
+    pub token: String,
+    /// 8 to 128 characters.
+    pub new_password: String,
+}
+
+impl fmt::Debug for PasswordResetRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PasswordResetRequest")
+            .field("email", &"<redacted>")
+            .finish()
+    }
+}
+
+impl fmt::Debug for PasswordResetConfirmRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PasswordResetConfirmRequest")
+            .field("token", &"***")
+            .field("new_password", &"***")
+            .finish()
+    }
+}
+
+impl PasswordResetRequest {
+    pub fn into_command(self, client_ip: std::net::IpAddr) -> RequestPasswordResetCommand {
+        RequestPasswordResetCommand {
+            email: self.email,
+            client_ip,
+        }
+    }
+}
+
+impl From<PasswordResetConfirmRequest> for ConfirmPasswordResetCommand {
+    fn from(request: PasswordResetConfirmRequest) -> Self {
+        Self {
+            token: request.token,
+            new_password: request.new_password,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_request_debug_is_redacted() {
+        let request = PasswordResetRequest {
+            email: "an@example.com".to_owned(),
+        };
+        assert!(!format!("{request:?}").contains("an@example.com"));
+
+        let confirm = PasswordResetConfirmRequest {
+            token: "secret-token".to_owned(),
+            new_password: "secret-password".to_owned(),
+        };
+        let debug = format!("{confirm:?}");
+        assert!(!debug.contains("secret-token"), "{debug}");
+        assert!(!debug.contains("secret-password"), "{debug}");
     }
 }

@@ -3,14 +3,11 @@ use std::sync::Arc;
 use crate::modules::auth::application::error::AuthError;
 use crate::modules::auth::application::login::LoginCommand;
 use crate::modules::auth::application::services::attempt_limiter::{
-    AttemptLimiter, LOGIN_PER_EMAIL, LOGIN_PER_IP, LimitKey,
+    AttemptLimiter, LOGIN_ACTION, LOGIN_PER_EMAIL, LOGIN_PER_IP, LimitKey,
 };
 use crate::modules::auth::application::services::{PasswordHashService, Session, SessionService};
 use crate::modules::auth::domain::{AttemptRepository, PlainPassword, RefreshTokenRepository};
 use crate::modules::users::domain::{Email, User, UserRepository};
-
-/// Action prefix of the sign-in counter keys.
-const ACTION: &str = "login";
 
 pub struct LoginHandler<U: UserRepository, R: RefreshTokenRepository, A: AttemptRepository> {
     users: U,
@@ -51,8 +48,8 @@ where
         };
 
         // 2. Record first, count second; over the limit means no password check.
-        let email_key = LimitKey::email(ACTION, &email, LOGIN_PER_EMAIL);
-        let ip_key = LimitKey::ip(ACTION, cmd.client_ip, LOGIN_PER_IP);
+        let email_key = LimitKey::email(LOGIN_ACTION, &email, LOGIN_PER_EMAIL);
+        let ip_key = LimitKey::ip(LOGIN_ACTION, cmd.client_ip, LOGIN_PER_IP);
         let ticket = self
             .limiter
             .acquire(&[email_key.clone(), ip_key.clone()])
