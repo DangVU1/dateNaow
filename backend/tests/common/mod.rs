@@ -1,0 +1,220 @@
+//! Shared helpers for integration tests: an in-process `TestApp`, a fake clock
+//! and the test configuration.
+//!
+//! Not every helper is used by every test module yet, so dead-code warnings
+//! are silenced for this file only.
+#![allow(dead_code)]
+
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+
+use axum::Router;
+use axum::body::Body;
+use axum::extract::connect_info::MockConnectInfo;
+use axum::http::{HeaderMap, Method, Request, StatusCode, header};
+use chrono::{DateTime, Utc};
+use http_body_util::BodyExt;
+use sqlx::PgPool;
+use tower::ServiceExt;
+
+use datenaow::config::Config;
+use datenaow::shared::clock::Clock;
+use datenaow::{AppState, build_router};
+
+/// Peer address that every test request appears to come from.
+pub const TEST_PEER_ADDR: ([u8; 4], u16) = ([203, 0, 113, 7], 40000);
+
+/// Configuration used by every `TestApp`. The pool comes from `#[sqlx::test]`,
+/// so `database_url` is never used to connect.
+pub fn test_config() -> Config {
+    Config {
+        database_url: "postgres://unused-in-tests".to_owned(),
+        bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        app_base_url: "http://localhost:5173".to_owned(),
+    }
+}
+
+/// The default start time of `FakeClock`: 2026-11-25T09:00:00Z.
+pub fn default_start() -> DateTime<Utc> {
+    "2026-11-25T09:00:00Z"
+        .parse()
+        .expect("valid RFC 3339 timestamp")
+}
+
+/// A clock that only moves when the test calls `advance`.
+#[derive(Debug)]
+pub struct FakeClock {
+    now: Mutex<DateTime<Utc>>,
+}
+
+impl FakeClock {
+    pub fn new(start: DateTime<Utc>) -> Self {
+        Self {
+            now: Mutex::new(start),
+        }
+    }
+
+    pub fn advance(&self, by: chrono::Duration) {
+        let mut now = self.now.lock().expect("fake clock mutex poisoned");
+        *now += by;
+    }
+}
+
+impl Default for FakeClock {
+    fn default() -> Self {
+        Self::new(default_start())
+    }
+}
+
+impl Clock for FakeClock {
+    fn now(&self) -> DateTime<Utc> {
+        *self.now.lock().expect("fake clock mutex poisoned")
+    }
+}
+
+/// The application router wired to a test database, called in-process.
+pub struct TestApp {
+    router: Router,
+    pub clock: Arc<FakeClock>,
+}
+
+impl TestApp {
+    pub fn new(pool: PgPool) -> Self {
+        Self::with_config(pool, test_config())
+    }
+
+    pub fn with_config(pool: PgPool, config: Config) -> Self {
+        let clock = Arc::new(FakeClock::default());
+        let state = AppState::new(config, pool, clock.clone());
+        let router = build_router(state).layer(MockConnectInfo(SocketAddr::from(TEST_PEER_ADDR)));
+        Self { router, clock }
+    }
+
+    pub fn get(&self, path: &str) -> TestRequest {
+        self.request(Method::GET, path)
+    }
+
+    pub fn post(&self, path: &str) -> TestRequest {
+        self.request(Method::POST, path)
+    }
+
+    pub fn patch(&self, path: &str) -> TestRequest {
+        self.request(Method::PATCH, path)
+    }
+
+    fn request(&self, method: Method, path: &str) -> TestRequest {
+        TestRequest {
+            router: self.router.clone(),
+            method,
+            path: path.to_owned(),
+            headers: Vec::new(),
+            cookies: Vec::new(),
+            body: None,
+        }
+    }
+}
+
+/// A request being built; call `send` to run it through the router.
+pub struct TestRequest {
+    router: Router,
+    method: Method,
+    path: String,
+    headers: Vec<(String, String)>,
+    cookies: Vec<String>,
+    body: Option<Vec<u8>>,
+}
+
+impl TestRequest {
+    /// Sets a JSON body and `Content-Type: application/json`.
+    pub fn json(mut self, value: &serde_json::Value) -> Self {
+        let bytes = serde_json::to_vec(value).expect("serialize JSON body");
+        self.headers.push((
+            header::CONTENT_TYPE.as_str().to_owned(),
+            "application/json".to_owned(),
+        ));
+        self.body = Some(bytes);
+        self
+    }
+
+    /// Sets `Authorization: Bearer <token>`.
+    pub fn bearer(self, token: &str) -> Self {
+        self.header(header::AUTHORIZATION.as_str(), &format!("Bearer {token}"))
+    }
+
+    /// Adds a cookie pair such as `"dn_refresh=abc"`; several calls are joined
+    /// into one `Cookie` header.
+    pub fn cookie(mut self, pair: &str) -> Self {
+        self.cookies.push(pair.to_owned());
+        self
+    }
+
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_owned(), value.to_owned()));
+        self
+    }
+
+    pub async fn send(self) -> TestResponse {
+        let mut builder = Request::builder().method(self.method).uri(&self.path);
+        for (name, value) in &self.headers {
+            builder = builder.header(name, value);
+        }
+        if !self.cookies.is_empty() {
+            builder = builder.header(header::COOKIE, self.cookies.join("; "));
+        }
+        let body = self.body.map(Body::from).unwrap_or_else(Body::empty);
+        let request = builder.body(body).expect("build test request");
+
+        let response = self
+            .router
+            .oneshot(request)
+            .await
+            .expect("router is infallible");
+
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read response body")
+            .to_bytes();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+
+        TestResponse {
+            status,
+            headers,
+            body,
+            text,
+        }
+    }
+}
+
+/// A finished response. `body` is `Value::Null` when the body is not JSON.
+#[derive(Debug)]
+pub struct TestResponse {
+    pub status: StatusCode,
+    pub headers: HeaderMap,
+    pub body: serde_json::Value,
+    pub text: String,
+}
+
+impl TestResponse {
+    /// The whole `Set-Cookie` header value for the named cookie, attributes included.
+    pub fn set_cookie(&self, name: &str) -> Option<String> {
+        let prefix = format!("{name}=");
+        self.headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .find(|value| value.starts_with(&prefix))
+            .map(str::to_owned)
+    }
+
+    /// Only the value of the named cookie from its `Set-Cookie` header.
+    pub fn cookie_value(&self, name: &str) -> Option<String> {
+        let header = self.set_cookie(name)?;
+        let pair = header.split(';').next()?;
+        pair.split_once('=').map(|(_, value)| value.to_owned())
+    }
+}

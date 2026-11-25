@@ -124,10 +124,39 @@ Extra backend crates approved on 2026-11-25 (`docs/DECISIONS.md` #7): tower-http
 
 ### 2.4 Versions
 
-Versions are **not pinned yet**. When scaffolding:
-- Choose current stable versions and verify them against official documentation.
-- Pin them in `Cargo.toml` / `package.json` (with lockfiles committed).
-- Record the chosen major versions in this section.
+Backend versions verified on 2026-11-25 (plan 1, Task 1) with `cargo search` / `cargo info`, and Docker tags with `docker manifest inspect`. Crates are pinned exactly (`=x.y.z`) in `backend/Cargo.toml`; `Cargo.lock` is committed. A crate marked "later" is not in `Cargo.toml` yet: the task that first uses it adds it at this version (`cargo add <crate>@=<x.y.z>`).
+
+| Component | Version | Features | In Cargo.toml |
+|---|---|---|---|
+| Rust toolchain | 1.100.0 stable (`rust-version = "1.94"`, required by sqlx 0.9) | | |
+| axum | 0.8.9 | default | yes |
+| tokio | 1.54.1 | macros, rt-multi-thread, net, signal | yes |
+| tower | 0.5.3 | timeout, util | yes |
+| tower-http | 0.7.1 (uses `http` 1 and `tower` 0.5, same as axum 0.8.9; no duplicates in `cargo tree -d`) | trace, request-id | yes |
+| sqlx | 0.9.1 (no default features) | runtime-tokio, postgres, uuid, chrono, migrate, macros | yes |
+| serde / serde_json | 1.0.229 / 1.0.154 | serde: derive | yes |
+| anyhow | 1.0.105 | | yes |
+| tracing / tracing-subscriber | 0.1.44 / 0.3.23 | subscriber: env-filter | yes |
+| chrono | 0.4.45 | serde | yes |
+| dotenvy | 0.15.7 | | yes |
+| http-body-util (dev only) | 0.1.5 | | yes |
+| axum-extra | 0.12.6 (the axum 0.8 line) | cookie | later |
+| jsonwebtoken | 12.0.0 | crypto backend chosen in Task 4 | later |
+| argon2 | 0.6.0 | | later |
+| validator | 0.21.0 | derive | later |
+| utoipa | 6.0.0 | chrono, uuid | later |
+| lettre | 0.11.24 | tokio1, smtp-transport, builder | later |
+| thiserror | 2.0.21 | | later |
+| uuid | 1.29.3 | serde | later |
+| rand | 0.10.4 | | later |
+| sha2 | 0.11.1 | | later |
+| sqlx-cli (global tool) | 0.9.1 | | installed globally |
+| PostgreSQL image | `postgres:18.7` (latest 18.x tag) | | |
+| Mailpit image | `axllent/mailpit:v1.34.0` | | |
+
+Frontend versions are verified and recorded here in plan 1, Task 11.
+
+If a new major version's API differs from the plan and cannot be fixed within the task, pin the previous stable major instead and record the reason here (plan 1, "Phiên bản và phụ thuộc").
 
 Avoid unnecessary dependencies. Adding a new crate or npm package requires approval (global rules).
 

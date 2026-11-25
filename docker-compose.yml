@@ -1,0 +1,28 @@
+# Local development environment. The backend service is added in plan 1, Task 10.
+services:
+  postgres:
+    image: postgres:18.7
+    environment:
+      POSTGRES_USER: datenaow
+      POSTGRES_PASSWORD: datenaow
+      POSTGRES_DB: datenaow
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # PostgreSQL 18 images keep data under /var/lib/postgresql/<major>/,
+      # so the volume is mounted on the parent directory.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datenaow -d datenaow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:v1.34.0
+    ports:
+      - "127.0.0.1:1025:1025" # SMTP
+      - "127.0.0.1:8025:8025" # web UI
+
+volumes:
+  postgres-data:

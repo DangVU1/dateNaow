@@ -102,3 +102,4 @@ Each entry: date, decision, rationale, and source. Superseded entries stay in pl
 - **Options considered:** subagent-driven (chosen); native (one session implements all tasks, with a single review at the end).
 - **Rationale:** the tasks depend tightly on each other's interfaces, and the authentication code is security-sensitive, so catching mistakes task by task is worth the extra cost.
 - **Source:** owner's choice on 2026-11-25.
+- **Addendum (2026-11-25):** the Superpowers plugin (`superpowers:subagent-driven-development`) is not available in the executing session, so the owner chose to run the same pattern by hand: the main agent launches one implementer subagent per task, then a separate reviewer subagent, and integrates and commits itself. For plan 1 this is a deliberate exception to the global rule that only the main agent edits files.
