@@ -19,6 +19,12 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to connect to PostgreSQL")?;
 
+    sqlx::migrate!()
+        .run(&db)
+        .await
+        .context("failed to run database migrations")?;
+    tracing::info!("database migrations applied");
+
     let bind_addr = config.bind_addr;
     let router = build_router(AppState::new(config, db, Arc::new(SystemClock)));
 

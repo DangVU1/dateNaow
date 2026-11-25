@@ -7,3 +7,4 @@ mod common;
 mod errors;
 mod health;
 mod openapi;
+mod users_repository;
