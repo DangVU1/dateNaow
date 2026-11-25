@@ -141,8 +141,8 @@ Backend versions verified on 2026-11-25 (plan 1, Task 1) with `cargo search` / `
 | dotenvy | 0.15.7 | | yes |
 | http-body-util (dev only) | 0.1.5 | | yes |
 | axum-extra | 0.12.6 (the axum 0.8 line) | cookie | later |
-| jsonwebtoken | 12.0.0 | crypto backend chosen in Task 4 | later |
-| argon2 | 0.6.0 | | later |
+| jsonwebtoken | 12.0.0 (no default features: PEM keys are not needed for HS256) | rust_crypto (pure-Rust RustCrypto backend; builds on Windows MSVC without the C/CMake toolchain `aws_lc_rs` needs) | yes |
+| argon2 | 0.6.0 | default (alloc, getrandom, password-hash; salts come from the OS RNG via `getrandom`, so no `rand` here) | yes |
 | validator | 0.21.0 (its derive resolves to `validator_derive` 0.20.1) | derive | yes |
 | utoipa | 6.0.0 | default (macros) now; chrono, uuid added by the task that first needs them | yes |
 | lettre | 0.11.24 | tokio1, smtp-transport, builder | later |

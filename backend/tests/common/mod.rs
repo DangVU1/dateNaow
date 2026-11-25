@@ -35,6 +35,12 @@ pub fn test_config() -> Config {
         bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
         app_base_url: "http://localhost:5173".to_owned(),
         request_timeout: Duration::from_secs(15),
+        jwt_secret: "test-jwt-secret-that-is-at-least-32-bytes".to_owned(),
+        access_token_ttl_secs: 900,
+        // Small Argon2 parameters keep password hashing fast in tests.
+        argon2_memory_kib: 1024,
+        argon2_iterations: 1,
+        argon2_parallelism: 1,
     }
 }
 
