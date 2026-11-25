@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::shared::error::{ApiError, FieldErrors};
+use crate::shared::error::{ApiError, FieldErrors, display_chain};
 
 #[derive(thiserror::Error)]
 pub enum AuthError {
@@ -72,18 +72,6 @@ impl From<AuthError> for ApiError {
             }
         }
     }
-}
-
-/// `error: source: source-of-source`, using `Display` at every level.
-fn display_chain(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut out = error.to_string();
-    let mut source = error.source();
-    while let Some(inner) = source {
-        out.push_str(": ");
-        out.push_str(&inner.to_string());
-        source = inner.source();
-    }
-    out
 }
 
 #[cfg(test)]

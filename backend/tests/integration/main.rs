@@ -8,5 +8,6 @@ mod auth_refresh_logout;
 mod auth_register_login;
 mod errors;
 mod health;
+mod me_and_admin;
 mod openapi;
 mod users_repository;

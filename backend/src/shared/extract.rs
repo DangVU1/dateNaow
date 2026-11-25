@@ -5,6 +5,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer};
 use validator::Validate;
 
 use crate::shared::error::ApiError;
@@ -49,5 +50,60 @@ fn json_rejection_to_api_error(rejection: JsonRejection) -> ApiError {
         JsonRejection::BytesRejection(_) => ApiError::BadRequest("bad_request"),
         // `JsonRejection` is non-exhaustive.
         _ => ApiError::BadRequest("bad_request"),
+    }
+}
+
+/// For `#[serde(default, deserialize_with = "double_option")]` on an
+/// `Option<Option<T>>` field, so a PATCH body can tell three cases apart:
+/// field missing (`None`), `null` (`Some(None)`) and a value (`Some(Some(v))`).
+/// Without it serde reads `null` as a missing field.
+pub fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+    use serde_json::json;
+
+    use super::double_option;
+
+    #[derive(Debug, Deserialize)]
+    struct Patch {
+        #[serde(default, deserialize_with = "double_option")]
+        value: Option<Option<String>>,
+    }
+
+    fn parse(body: serde_json::Value) -> Option<Option<String>> {
+        serde_json::from_value::<Patch>(body)
+            .expect("valid patch body")
+            .value
+    }
+
+    #[test]
+    fn missing_field_is_none() {
+        assert_eq!(parse(json!({})), None);
+    }
+
+    #[test]
+    fn null_is_some_none() {
+        assert_eq!(parse(json!({ "value": null })), Some(None));
+    }
+
+    #[test]
+    fn value_is_some_some() {
+        assert_eq!(
+            parse(json!({ "value": "female" })),
+            Some(Some("female".to_owned()))
+        );
+    }
+
+    #[test]
+    fn wrong_type_is_an_error() {
+        assert!(serde_json::from_value::<Patch>(json!({ "value": 3 })).is_err());
     }
 }

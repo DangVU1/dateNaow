@@ -159,6 +159,20 @@ impl From<ValidationErrors> for ApiError {
     }
 }
 
+/// `error: source: source-of-source`, using `Display` at every level. Used to
+/// log internal errors whose `Debug` (e.g. sqlx database errors) can contain
+/// row data.
+pub fn display_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = error.to_string();
+    let mut source = error.source();
+    while let Some(inner) = source {
+        out.push_str(": ");
+        out.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    out
+}
+
 /// Flattens `validator` errors into `FieldErrors`, using each error's `code`.
 /// Nested structs become `parent.child`, list items `parent[0].child`.
 pub fn field_errors(errors: &ValidationErrors) -> FieldErrors {

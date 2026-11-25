@@ -15,7 +15,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::{Level, Span};
 
-use crate::modules::auth;
+use crate::modules::{auth, users};
 use crate::shared::error::ApiError;
 use crate::shared::{health, openapi};
 use crate::state::AppState;
@@ -31,6 +31,7 @@ pub fn build_router(state: AppState) -> Router {
             "/auth",
             auth::presentation::routes().layer(middleware::map_response(no_store)),
         )
+        .merge(users::presentation::routes().layer(middleware::map_response(no_store)))
         // Unknown paths under /api/v1 answer with the JSON envelope.
         .fallback(|| async { ApiError::NotFound });
 

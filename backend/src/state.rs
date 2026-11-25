@@ -14,12 +14,16 @@ use crate::modules::auth::application::services::{
     AttemptLimiter, JwtService, PasswordHashService, SessionService,
 };
 use crate::modules::auth::infrastructure::{PgAttemptRepository, PgRefreshTokenRepository};
+use crate::modules::users::application::get_current_user::GetCurrentUserHandler;
+use crate::modules::users::application::update_gender::UpdateGenderHandler;
 use crate::modules::users::infrastructure::PgUserRepository;
 use crate::shared::clock::Clock;
 
 pub type Sessions = SessionService<PgUserRepository, PgRefreshTokenRepository>;
 pub type Register = RegisterHandler<PgUserRepository, PgRefreshTokenRepository>;
 pub type Login = LoginHandler<PgUserRepository, PgRefreshTokenRepository, PgAttemptRepository>;
+pub type GetCurrentUser = GetCurrentUserHandler<PgUserRepository>;
+pub type UpdateGender = UpdateGenderHandler<PgUserRepository>;
 
 /// The auth use cases, each shared behind an `Arc`.
 #[derive(Clone)]
@@ -27,6 +31,13 @@ pub struct AuthHandlers {
     pub register: Arc<Register>,
     pub login: Arc<Login>,
     pub sessions: Arc<Sessions>,
+}
+
+/// The users use cases, each shared behind an `Arc`.
+#[derive(Clone)]
+pub struct UsersHandlers {
+    pub get_current_user: Arc<GetCurrentUser>,
+    pub update_gender: Arc<UpdateGender>,
 }
 
 #[derive(Clone)]
@@ -37,6 +48,7 @@ pub struct AppState {
     pub jwt: Arc<JwtService>,
     pub users_repo: PgUserRepository,
     pub auth: AuthHandlers,
+    pub users: UsersHandlers,
 }
 
 impl AppState {
@@ -78,12 +90,16 @@ impl AppState {
             config: Arc::new(config),
             clock,
             jwt,
-            users_repo,
             auth: AuthHandlers {
                 register,
                 login,
                 sessions,
             },
+            users: UsersHandlers {
+                get_current_user: Arc::new(GetCurrentUserHandler::new(users_repo.clone())),
+                update_gender: Arc::new(UpdateGenderHandler::new(users_repo.clone())),
+            },
+            users_repo,
         })
     }
 }
