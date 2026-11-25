@@ -2,6 +2,7 @@
 //! the OpenAPI document.
 
 pub mod actor;
+pub mod client_ip;
 pub mod clock;
 pub mod error;
 pub mod extract;

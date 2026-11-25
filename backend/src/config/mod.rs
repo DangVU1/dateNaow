@@ -43,6 +43,11 @@ pub struct Config {
     pub argon2_iterations: u32,
     /// Argon2id degree of parallelism (P4).
     pub argon2_parallelism: u32,
+    /// Adds `Secure` to the refresh cookie (P3). Default `true`.
+    pub cookie_secure: bool,
+    /// Read the client address from `X-Forwarded-For` (P5). Turn on only
+    /// behind a reverse proxy that sets it. Default `false`.
+    pub trust_proxy: bool,
 }
 
 impl Config {
@@ -104,6 +109,10 @@ impl Config {
             optional_number(&lookup, key, default, |_: &u32| true)
                 .ok_or_else(|| anyhow!("{key} must be a whole number"))
         };
+        let flag = |key: &str, default: bool| {
+            optional_bool(&lookup, key, default)
+                .ok_or_else(|| anyhow!("{key} must be true or false"))
+        };
 
         let config = Self {
             database_url,
@@ -119,6 +128,8 @@ impl Config {
                 "ARGON2_PARALLELISM",
                 argon2::Params::DEFAULT_P_COST,
             )?,
+            cookie_secure: flag("COOKIE_SECURE", true)?,
+            trust_proxy: flag("TRUST_PROXY", false)?,
         };
         // Reject parameters Argon2 would refuse now, not at the first sign-up.
         config.argon2_params()?;
@@ -153,6 +164,23 @@ fn optional_number<T: std::str::FromStr>(
     }
 }
 
+/// Parses an optional boolean variable (`true`/`false`, `1`/`0`, any case).
+/// A missing or blank value gives `default`; `None` means it is unparsable.
+fn optional_bool(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    default: bool,
+) -> Option<bool> {
+    match lookup(key).filter(|value| !value.trim().is_empty()) {
+        Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => Some(true),
+            "false" | "0" => Some(false),
+            _ => None,
+        },
+        None => Some(default),
+    }
+}
+
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
@@ -166,6 +194,8 @@ impl fmt::Debug for Config {
             .field("argon2_memory_kib", &self.argon2_memory_kib)
             .field("argon2_iterations", &self.argon2_iterations)
             .field("argon2_parallelism", &self.argon2_parallelism)
+            .field("cookie_secure", &self.cookie_secure)
+            .field("trust_proxy", &self.trust_proxy)
             .finish()
     }
 }
@@ -227,6 +257,42 @@ mod tests {
         assert_eq!(config.argon2_memory_kib, 65536);
         assert_eq!(config.argon2_iterations, 3);
         assert_eq!(config.argon2_parallelism, 2);
+    }
+
+    #[test]
+    fn cookie_secure_and_trust_proxy_default_to_safe_values() {
+        let config = Config::from_lookup(lookup_from(&minimal_with(&[]))).unwrap();
+        assert!(config.cookie_secure);
+        assert!(!config.trust_proxy);
+    }
+
+    #[test]
+    fn reads_cookie_secure_and_trust_proxy() {
+        let config = Config::from_lookup(lookup_from(&minimal_with(&[
+            ("COOKIE_SECURE", "false"),
+            ("TRUST_PROXY", " TRUE "),
+        ])))
+        .unwrap();
+        assert!(!config.cookie_secure);
+        assert!(config.trust_proxy);
+
+        let config = Config::from_lookup(lookup_from(&minimal_with(&[
+            ("COOKIE_SECURE", "0"),
+            ("TRUST_PROXY", "1"),
+        ])))
+        .unwrap();
+        assert!(!config.cookie_secure);
+        assert!(config.trust_proxy);
+    }
+
+    #[test]
+    fn invalid_flags_are_an_error() {
+        for key in ["COOKIE_SECURE", "TRUST_PROXY"] {
+            for value in ["yes", "2", "on"] {
+                let result = Config::from_lookup(lookup_from(&minimal_with(&[(key, value)])));
+                assert!(result.is_err(), "{key}={value} should be rejected");
+            }
+        }
     }
 
     #[test]

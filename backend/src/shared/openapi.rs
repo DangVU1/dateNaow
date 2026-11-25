@@ -5,14 +5,24 @@
 use axum::Json;
 use utoipa::OpenApi;
 
+use crate::modules::auth::presentation::dto::{AuthResponse, LoginRequest, RegisterRequest};
+use crate::modules::auth::presentation::handlers as auth;
+use crate::modules::users::presentation::dto::UserResponse;
 use crate::shared::error::{ErrorBody, ErrorResponse};
 use crate::shared::health;
 
 #[derive(OpenApi)]
 #[openapi(
     info(title = "dateNaow API"),
-    paths(health::health),
-    components(schemas(ErrorResponse, ErrorBody))
+    paths(health::health, auth::register, auth::login),
+    components(schemas(
+        ErrorResponse,
+        ErrorBody,
+        RegisterRequest,
+        LoginRequest,
+        AuthResponse,
+        UserResponse
+    ))
 )]
 pub struct ApiDoc;
 

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use chrono::{DateTime, Utc};
@@ -42,6 +43,8 @@ pub fn test_config() -> Config {
         argon2_memory_kib: 1024,
         argon2_iterations: 1,
         argon2_parallelism: 1,
+        cookie_secure: false,
+        trust_proxy: false,
     }
 }
 
@@ -104,7 +107,7 @@ impl TestApp {
 
     pub fn with_config(pool: PgPool, config: Config) -> Self {
         let clock = Arc::new(FakeClock::default());
-        let state = AppState::new(config, pool, clock.clone());
+        let state = AppState::new(config, pool, clock.clone()).expect("build app state");
         let router = build_router(state).layer(MockConnectInfo(SocketAddr::from(TEST_PEER_ADDR)));
         Self { router, clock }
     }
@@ -113,7 +116,7 @@ impl TestApp {
     /// real middleware stack, e.g. to probe extractors or the timeout.
     pub fn with_routes(pool: PgPool, config: Config, routes: Router<AppState>) -> Self {
         let clock = Arc::new(FakeClock::default());
-        let state = AppState::new(config, pool, clock.clone());
+        let state = AppState::new(config, pool, clock.clone()).expect("build app state");
         let router =
             with_middleware(routes, state).layer(MockConnectInfo(SocketAddr::from(TEST_PEER_ADDR)));
         Self { router, clock }
@@ -131,6 +134,14 @@ impl TestApp {
         self.request(Method::PATCH, path)
     }
 
+    /// `POST /api/v1/auth/register` with the given email and password.
+    pub async fn register(&self, email: &str, password: &str) -> TestResponse {
+        self.post("/api/v1/auth/register")
+            .json(&serde_json::json!({ "email": email, "password": password }))
+            .send()
+            .await
+    }
+
     fn request(&self, method: Method, path: &str) -> TestRequest {
         TestRequest {
             router: self.router.clone(),
@@ -139,6 +150,7 @@ impl TestApp {
             headers: Vec::new(),
             cookies: Vec::new(),
             body: None,
+            peer: None,
         }
     }
 }
@@ -151,6 +163,7 @@ pub struct TestRequest {
     headers: Vec<(String, String)>,
     cookies: Vec<String>,
     body: Option<Vec<u8>>,
+    peer: Option<SocketAddr>,
 }
 
 impl TestRequest {
@@ -189,6 +202,13 @@ impl TestRequest {
         self
     }
 
+    /// Makes this request come from `addr` instead of `TEST_PEER_ADDR`. A real
+    /// `ConnectInfo` extension takes precedence over `MockConnectInfo`.
+    pub fn peer(mut self, addr: SocketAddr) -> Self {
+        self.peer = Some(addr);
+        self
+    }
+
     pub async fn send(self) -> TestResponse {
         let mut builder = Request::builder().method(self.method).uri(&self.path);
         for (name, value) in &self.headers {
@@ -198,7 +218,10 @@ impl TestRequest {
             builder = builder.header(header::COOKIE, self.cookies.join("; "));
         }
         let body = self.body.map(Body::from).unwrap_or_else(Body::empty);
-        let request = builder.body(body).expect("build test request");
+        let mut request = builder.body(body).expect("build test request");
+        if let Some(addr) = self.peer {
+            request.extensions_mut().insert(ConnectInfo(addr));
+        }
 
         let response = self
             .router

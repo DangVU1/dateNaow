@@ -5,6 +5,7 @@
 mod common;
 
 mod auth_refresh_logout;
+mod auth_register_login;
 mod errors;
 mod health;
 mod openapi;

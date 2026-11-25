@@ -1,9 +1,18 @@
 //! Argon2id password hashing (P4). Hashing is CPU- and memory-heavy, so every
 //! operation runs on Tokio's blocking pool instead of an async worker thread.
 //! Passwords and hashes are never logged.
+//!
+//! The number of Argon2 runs in flight is capped (one per CPU): each run
+//! allocates `m_cost` KiB (about 19 MiB by default), and the blocking pool
+//! would otherwise start up to 512 of them under a burst of sign-ups or
+//! sign-ins. Extra requests wait for a permit instead; the request timeout
+//! still bounds how long they wait.
+
+use std::sync::Arc;
 
 use argon2::password_hash::{self, PasswordHasher, PasswordVerifier};
 use argon2::{Algorithm, Argon2, Params, Version};
+use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 
 use crate::modules::auth::domain::PlainPassword;
 
@@ -17,15 +26,21 @@ pub enum HashError {
     /// The blocking task panicked or was cancelled.
     #[error("password hashing task failed: {0}")]
     Task(#[from] tokio::task::JoinError),
+    /// The concurrency limiter was closed (never happens while the service lives).
+    #[error("password hashing limiter closed: {0}")]
+    Closed(#[from] AcquireError),
 }
 
-/// Hashes and verifies passwords with Argon2id v19.
+/// Hashes and verifies passwords with Argon2id v19. Clones share one
+/// concurrency limit.
 #[derive(Clone)]
 pub struct PasswordHashService {
     params: Params,
     /// A PHC hash of a throw-away password, made with `params`, so that
     /// `verify_dummy` costs the same as verifying a real account's hash.
     dummy_hash: String,
+    /// Caps concurrent Argon2 runs; see the module docs.
+    permits: Arc<Semaphore>,
 }
 
 /// Password and salt of the dummy hash. Not secret: no account ever has it.
@@ -46,7 +61,18 @@ impl PasswordHashService {
             .hash_password_with_salt(DUMMY_PASSWORD, DUMMY_SALT)
             .expect("Argon2 hashes a fixed password with validated params")
             .to_string();
-        Self { params, dummy_hash }
+        let max_concurrent = std::thread::available_parallelism().map_or(1, usize::from);
+        Self {
+            params,
+            dummy_hash,
+            permits: Arc::new(Semaphore::new(max_concurrent)),
+        }
+    }
+
+    /// Waits for a slot. The permit is moved into the blocking task, so it is
+    /// held until Argon2 actually finishes, even if the request is dropped.
+    async fn permit(&self) -> Result<OwnedSemaphorePermit, HashError> {
+        Ok(self.permits.clone().acquire_owned().await?)
     }
 
     /// Hashes `p` with a fresh random salt and returns the PHC string
@@ -54,7 +80,9 @@ impl PasswordHashService {
     pub async fn hash(&self, p: &PlainPassword) -> Result<String, HashError> {
         let params = self.params.clone();
         let password = p.expose().to_owned();
+        let permit = self.permit().await?;
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             argon2id(&params)
                 .hash_password(password.as_bytes())
                 .map(|hash| hash.to_string())
@@ -69,7 +97,9 @@ impl PasswordHashService {
         let params = self.params.clone();
         let password = p.expose().to_owned();
         let phc_hash = phc_hash.to_owned();
+        let permit = self.permit().await?;
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             match argon2id(&params).verify_password(password.as_bytes(), phc_hash.as_str()) {
                 Ok(()) => Ok(true),
                 Err(password_hash::Error::PasswordInvalid) => Ok(false),
@@ -160,6 +190,25 @@ mod tests {
         let p = password("correct horse battery");
         let h = old.hash(&p).await.expect("hash");
         assert!(service().verify(&p, &h).await.expect("verify"));
+    }
+
+    #[tokio::test]
+    async fn clones_share_one_limit_and_release_permits() {
+        let svc = service();
+        let clone = svc.clone();
+        assert!(Arc::ptr_eq(&svc.permits, &clone.permits));
+
+        let available = svc.permits.available_permits();
+        assert!(available >= 1);
+        let p = password("correct horse battery");
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..(available * 3) {
+            let svc = svc.clone();
+            let p = PlainPassword::parse(p.expose().to_owned()).expect("valid");
+            set.spawn(async move { svc.hash(&p).await.is_ok() });
+        }
+        assert!(set.join_all().await.into_iter().all(|ok| ok));
+        assert_eq!(svc.permits.available_permits(), available);
     }
 
     #[tokio::test]

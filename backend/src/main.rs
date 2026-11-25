@@ -26,7 +26,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("database migrations applied");
 
     let bind_addr = config.bind_addr;
-    let router = build_router(AppState::new(config, db, Arc::new(SystemClock)));
+    let state = AppState::new(config, db, Arc::new(SystemClock))
+        .context("failed to build application state")?;
+    let router = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await

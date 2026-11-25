@@ -4,9 +4,10 @@
 use axum::body::Body;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::DefaultBodyLimit;
-use axum::http::Request;
+use axum::http::{HeaderValue, Request, header};
+use axum::response::Response;
 use axum::routing::get;
-use axum::{BoxError, Router};
+use axum::{BoxError, Router, middleware};
 use tower::ServiceBuilder;
 use tower::timeout::TimeoutLayer;
 use tower::timeout::error::Elapsed;
@@ -14,6 +15,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::{Level, Span};
 
+use crate::modules::auth;
 use crate::shared::error::ApiError;
 use crate::shared::{health, openapi};
 use crate::state::AppState;
@@ -25,6 +27,10 @@ pub fn build_router(state: AppState) -> Router {
     let api = Router::new()
         .route("/health", get(health::health))
         .route("/openapi.json", get(openapi::openapi_json))
+        .nest(
+            "/auth",
+            auth::presentation::routes().layer(middleware::map_response(no_store)),
+        )
         // Unknown paths under /api/v1 answer with the JSON envelope.
         .fallback(|| async { ApiError::NotFound });
 
@@ -67,6 +73,16 @@ fn request_span(request: &Request<Body>) -> Span {
         method = %request.method(),
         uri = %request.uri(),
     )
+}
+
+/// Sets `Cache-Control: no-store` (P2), replacing any existing value, on every
+/// response of the routes it wraps (tokens and account data must not be cached).
+/// Errors from extractors inside those routes get it too.
+pub async fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Converts errors from fallible middleware (the timeout) into the JSON envelope.

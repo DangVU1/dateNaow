@@ -130,7 +130,7 @@ Backend versions verified on 2026-11-25 (plan 1, Task 1) with `cargo search` / `
 |---|---|---|---|
 | Rust toolchain | 1.100.0 stable (`rust-version = "1.94"`, required by sqlx 0.9) | | |
 | axum | 0.8.9 | default | yes |
-| tokio | 1.54.1 | macros, rt-multi-thread, net, signal, time | yes |
+| tokio | 1.54.1 | macros, rt-multi-thread, net, signal, time, sync (Argon2 concurrency semaphore) | yes |
 | tower | 0.5.3 | timeout, util | yes |
 | tower-http | 0.7.1 (uses `http` 1 and `tower` 0.5, same as axum 0.8.9; no duplicates in `cargo tree -d`) | trace, request-id | yes |
 | sqlx | 0.9.1 (no default features) | runtime-tokio, postgres, uuid, chrono, migrate, macros | yes |
@@ -140,7 +140,7 @@ Backend versions verified on 2026-11-25 (plan 1, Task 1) with `cargo search` / `
 | chrono | 0.4.45 | serde | yes |
 | dotenvy | 0.15.7 | | yes |
 | http-body-util (dev only) | 0.1.5 | | yes |
-| axum-extra | 0.12.6 (the axum 0.8 line) | cookie | later |
+| axum-extra | 0.12.6 (the axum 0.8 line) | cookie (default features kept) | yes |
 | jsonwebtoken | 12.0.0 (no default features: PEM keys are not needed for HS256) | rust_crypto (pure-Rust RustCrypto backend; builds on Windows MSVC without the C/CMake toolchain `aws_lc_rs` needs) | yes |
 | argon2 | 0.6.0 | default (alloc, getrandom, password-hash; salts come from the OS RNG via `getrandom`, so no `rand` here) | yes |
 | validator | 0.21.0 (its derive resolves to `validator_derive` 0.20.1) | derive | yes |
