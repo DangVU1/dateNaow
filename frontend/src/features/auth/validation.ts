@@ -22,9 +22,25 @@ export function validateCredentials(
   email: string,
   password: string,
 ): FieldErrors {
-  const errors: FieldErrors = {};
-  if (email.trim() === '') errors.email = ['required'];
+  const errors = validateEmail(email);
   const pwError = passwordError(password);
   if (pwError !== null) errors.password = [pwError];
   return errors;
+}
+
+/** Client-side checks before setting a new password from a reset link. */
+export function validateNewPassword(
+  newPassword: string,
+  confirmPassword: string,
+): FieldErrors {
+  const errors: FieldErrors = {};
+  const pwError = passwordError(newPassword);
+  if (pwError !== null) errors.new_password = [pwError];
+  if (confirmPassword !== newPassword) errors.confirm_password = ['mismatch'];
+  return errors;
+}
+
+/** Client-side check before asking for a reset link. */
+export function validateEmail(email: string): FieldErrors {
+  return email.trim() === '' ? { email: ['required'] } : {};
 }

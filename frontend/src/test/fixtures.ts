@@ -1,8 +1,9 @@
-import type { AuthResponse } from '../shared/api/types';
+import type { AuthResponse, UserDto } from '../shared/api/types';
 
 export function authResponse(
   email = 'an@example.com',
   token = 'access-token',
+  user: Partial<Omit<UserDto, 'email'>> = {},
 ): AuthResponse {
   return {
     access_token: token,
@@ -13,6 +14,7 @@ export function authResponse(
       email,
       role: 'user',
       gender: null,
+      ...user,
     },
   };
 }

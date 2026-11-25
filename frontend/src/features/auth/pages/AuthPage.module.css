@@ -16,6 +16,18 @@
   gap: 16px;
 }
 
+.lead {
+  color: var(--color-text-muted);
+}
+
+/* Outcome of a request (success or a dead link), shown instead of the form. */
+.notice {
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
 .links {
   display: flex;
   flex-direction: column;

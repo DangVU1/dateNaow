@@ -40,5 +40,8 @@ export function fieldMessage(field: string, code: string): string {
     if (code === 'too_short') return 'Mật khẩu cần ít nhất 8 ký tự.';
     if (code === 'too_long') return 'Mật khẩu dài tối đa 128 ký tự.';
   }
+  if (field === 'confirm_password' && code === 'mismatch') {
+    return 'Hai mật khẩu chưa khớp nhau.';
+  }
   return 'Giá trị chưa hợp lệ.';
 }
