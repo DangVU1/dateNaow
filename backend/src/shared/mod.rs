@@ -1,4 +1,8 @@
-//! Code shared by every module: clock, health check (and, later, errors and extractors).
+//! Code shared by every module: clock, errors, extractors, health check and
+//! the OpenAPI document.
 
 pub mod clock;
+pub mod error;
+pub mod extract;
 pub mod health;
+pub mod openapi;

@@ -2,10 +2,13 @@
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
+/// Default request timeout (P9).
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 15;
 
 /// Runtime configuration. `Debug` is written by hand so secrets never reach logs.
 #[derive(Clone)]
@@ -15,6 +18,8 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     /// Public origin of the web app, used to build links in emails.
     pub app_base_url: String,
+    /// Requests running longer than this are answered with 408 (P9).
+    pub request_timeout: Duration,
 }
 
 impl Config {
@@ -38,11 +43,23 @@ impl Config {
             .unwrap_or_else(|| DEFAULT_BIND_ADDR.to_owned())
             .parse::<SocketAddr>()
             .context("BIND_ADDR must be a socket address such as 0.0.0.0:8080")?;
+        let request_timeout_secs = match lookup("REQUEST_TIMEOUT_SECS")
+            .filter(|value| !value.trim().is_empty())
+        {
+            Some(value) => value
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|secs| *secs > 0)
+                .ok_or_else(|| anyhow!("REQUEST_TIMEOUT_SECS must be a positive whole number"))?,
+            None => DEFAULT_REQUEST_TIMEOUT_SECS,
+        };
 
         Ok(Self {
             database_url,
             bind_addr,
             app_base_url,
+            request_timeout: Duration::from_secs(request_timeout_secs),
         })
     }
 }
@@ -53,6 +70,7 @@ impl fmt::Debug for Config {
             .field("database_url", &"***")
             .field("bind_addr", &self.bind_addr)
             .field("app_base_url", &self.app_base_url)
+            .field("request_timeout", &self.request_timeout)
             .finish()
     }
 }
@@ -92,6 +110,30 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(config.bind_addr, SocketAddr::from(([0, 0, 0, 0], 8080)));
+        assert_eq!(config.request_timeout, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn reads_request_timeout() {
+        let config = Config::from_lookup(lookup_from(&[
+            ("DATABASE_URL", "postgres://localhost/db"),
+            ("APP_BASE_URL", "http://localhost:5173"),
+            ("REQUEST_TIMEOUT_SECS", "30"),
+        ]))
+        .unwrap();
+        assert_eq!(config.request_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn invalid_request_timeout_is_an_error() {
+        for value in ["0", "-1", "abc", "1.5"] {
+            let result = Config::from_lookup(lookup_from(&[
+                ("DATABASE_URL", "postgres://localhost/db"),
+                ("APP_BASE_URL", "http://localhost:5173"),
+                ("REQUEST_TIMEOUT_SECS", value),
+            ]));
+            assert!(result.is_err(), "{value} should be rejected");
+        }
     }
 
     #[test]

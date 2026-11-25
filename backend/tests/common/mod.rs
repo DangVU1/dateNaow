@@ -7,6 +7,7 @@
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -15,9 +16,11 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use chrono::{DateTime, Utc};
 use http_body_util::BodyExt;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
 use datenaow::config::Config;
+use datenaow::routes::with_middleware;
 use datenaow::shared::clock::Clock;
 use datenaow::{AppState, build_router};
 
@@ -31,7 +34,16 @@ pub fn test_config() -> Config {
         database_url: "postgres://unused-in-tests".to_owned(),
         bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
         app_base_url: "http://localhost:5173".to_owned(),
+        request_timeout: Duration::from_secs(15),
     }
+}
+
+/// A pool that never connects unless a query runs. For tests that exercise
+/// the HTTP stack only and therefore use `#[tokio::test]`, not `#[sqlx::test]`.
+pub fn lazy_pool() -> PgPool {
+    PgPoolOptions::new()
+        .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+        .expect("valid lazy pool URL")
 }
 
 /// The default start time of `FakeClock`: 2026-11-25T09:00:00Z.
@@ -90,6 +102,16 @@ impl TestApp {
         Self { router, clock }
     }
 
+    /// Mounts test-only `routes` (at the root, not under `/api/v1`) on the
+    /// real middleware stack, e.g. to probe extractors or the timeout.
+    pub fn with_routes(pool: PgPool, config: Config, routes: Router<AppState>) -> Self {
+        let clock = Arc::new(FakeClock::default());
+        let state = AppState::new(config, pool, clock.clone());
+        let router =
+            with_middleware(routes, state).layer(MockConnectInfo(SocketAddr::from(TEST_PEER_ADDR)));
+        Self { router, clock }
+    }
+
     pub fn get(&self, path: &str) -> TestRequest {
         self.request(Method::GET, path)
     }
@@ -133,6 +155,13 @@ impl TestRequest {
             "application/json".to_owned(),
         ));
         self.body = Some(bytes);
+        self
+    }
+
+    /// Sets a raw body without touching any header, for malformed or
+    /// oversized payloads.
+    pub fn body(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.body = Some(bytes.into());
         self
     }
 

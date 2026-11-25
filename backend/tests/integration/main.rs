@@ -4,4 +4,6 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod errors;
 mod health;
+mod openapi;

@@ -1,12 +1,10 @@
 //! Top-level router: every API route lives under `/api/v1`, wrapped in the
 //! shared middleware stack.
 
-use std::time::Duration;
-
 use axum::body::Body;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::DefaultBodyLimit;
-use axum::http::{Request, StatusCode};
+use axum::http::Request;
 use axum::routing::get;
 use axum::{BoxError, Router};
 use tower::ServiceBuilder;
@@ -16,17 +14,26 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::{Level, Span};
 
-use crate::shared::health;
+use crate::shared::error::ApiError;
+use crate::shared::{health, openapi};
 use crate::state::AppState;
 
 /// Maximum request body size (P9). Routes that accept uploads raise it locally.
 const MAX_BODY_BYTES: usize = 65_536;
-/// Maximum time a request may take before it is answered with 408 (P9).
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn build_router(state: AppState) -> Router {
-    let api = Router::new().route("/health", get(health::health));
+    let api = Router::new()
+        .route("/health", get(health::health))
+        .route("/openapi.json", get(openapi::openapi_json))
+        // Unknown paths under /api/v1 answer with the JSON envelope.
+        .fallback(|| async { ApiError::NotFound });
 
+    with_middleware(Router::new().nest("/api/v1", api), state)
+}
+
+/// Wraps `routes` in the shared middleware stack and attaches the state.
+/// Public so integration tests can mount probe routes on the real stack.
+pub fn with_middleware(routes: Router<AppState>, state: AppState) -> Router {
     // One ServiceBuilder so the layers run in the order written, outermost first.
     let middleware = ServiceBuilder::new()
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
@@ -37,10 +44,9 @@ pub fn build_router(state: AppState) -> Router {
         )
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(HandleErrorLayer::new(handle_middleware_error))
-        .layer(TimeoutLayer::new(REQUEST_TIMEOUT));
+        .layer(TimeoutLayer::new(state.config.request_timeout));
 
-    Router::new()
-        .nest("/api/v1", api)
+    routes
         // Read by axum's body extractors; returns a rejection instead of a
         // non-JSON 413 like tower-http's RequestBodyLimitLayer would.
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -63,13 +69,11 @@ fn request_span(request: &Request<Body>) -> Span {
     )
 }
 
-/// Converts errors from fallible middleware (the timeout) into responses.
-/// Task 2 replaces the bare status codes with the JSON error envelope.
-async fn handle_middleware_error(error: BoxError) -> StatusCode {
+/// Converts errors from fallible middleware (the timeout) into the JSON envelope.
+async fn handle_middleware_error(error: BoxError) -> ApiError {
     if error.is::<Elapsed>() {
-        StatusCode::REQUEST_TIMEOUT
+        ApiError::Timeout
     } else {
-        tracing::error!(%error, "unhandled middleware error");
-        StatusCode::INTERNAL_SERVER_ERROR
+        ApiError::Internal(anyhow::anyhow!(error).context("unhandled middleware error"))
     }
 }

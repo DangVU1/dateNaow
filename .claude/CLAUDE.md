@@ -130,7 +130,7 @@ Backend versions verified on 2026-11-25 (plan 1, Task 1) with `cargo search` / `
 |---|---|---|---|
 | Rust toolchain | 1.100.0 stable (`rust-version = "1.94"`, required by sqlx 0.9) | | |
 | axum | 0.8.9 | default | yes |
-| tokio | 1.54.1 | macros, rt-multi-thread, net, signal | yes |
+| tokio | 1.54.1 | macros, rt-multi-thread, net, signal, time | yes |
 | tower | 0.5.3 | timeout, util | yes |
 | tower-http | 0.7.1 (uses `http` 1 and `tower` 0.5, same as axum 0.8.9; no duplicates in `cargo tree -d`) | trace, request-id | yes |
 | sqlx | 0.9.1 (no default features) | runtime-tokio, postgres, uuid, chrono, migrate, macros | yes |
@@ -143,10 +143,10 @@ Backend versions verified on 2026-11-25 (plan 1, Task 1) with `cargo search` / `
 | axum-extra | 0.12.6 (the axum 0.8 line) | cookie | later |
 | jsonwebtoken | 12.0.0 | crypto backend chosen in Task 4 | later |
 | argon2 | 0.6.0 | | later |
-| validator | 0.21.0 | derive | later |
-| utoipa | 6.0.0 | chrono, uuid | later |
+| validator | 0.21.0 (its derive resolves to `validator_derive` 0.20.1) | derive | yes |
+| utoipa | 6.0.0 | default (macros) now; chrono, uuid added by the task that first needs them | yes |
 | lettre | 0.11.24 | tokio1, smtp-transport, builder | later |
-| thiserror | 2.0.21 | | later |
+| thiserror | 2.0.21 | | yes |
 | uuid | 1.29.3 | serde | later |
 | rand | 0.10.4 | | later |
 | sha2 | 0.11.1 | | later |
