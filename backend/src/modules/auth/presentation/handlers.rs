@@ -3,10 +3,14 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 
+use crate::modules::auth::application::AuthError;
 use crate::modules::auth::application::services::Session;
-use crate::modules::auth::presentation::cookies::refresh_cookie;
+use crate::modules::auth::presentation::cookies::{
+    REFRESH_COOKIE, clear_refresh_cookie, refresh_cookie,
+};
 use crate::modules::auth::presentation::dto::{AuthResponse, LoginRequest, RegisterRequest};
 use crate::modules::users::domain::User;
 use crate::shared::client_ip::ClientIp;
@@ -60,6 +64,64 @@ pub async fn login(
         .execute(body.into_command(client_ip))
         .await?;
     Ok(signed_in(&state, &user, &session))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/refresh",
+    tag = "auth",
+    params(
+        ("dn_refresh" = String, Cookie, description = "The refresh token set by sign-up, sign-in or a previous refresh"),
+    ),
+    responses(
+        (status = 200, description = "New access token; rotates the `dn_refresh` cookie", body = AuthResponse),
+        (status = 401, description = "`invalid_refresh_token`: missing, unknown, expired or revoked; clears the cookie", body = ErrorResponse),
+        (status = 409, description = "`refresh_conflict`: the token was rotated moments ago (e.g. by another tab); the cookie is kept, retry shortly", body = ErrorResponse),
+    )
+)]
+pub async fn refresh(State(state): State<AppState>, jar: CookieJar) -> Response {
+    let result = match jar.get(REFRESH_COOKIE) {
+        Some(cookie) => state.auth.sessions.refresh(cookie.value()).await,
+        None => Err(AuthError::InvalidRefreshToken),
+    };
+    match result {
+        Ok((user, session)) => signed_in(&state, &user, &session).into_response(),
+        Err(error) => refresh_failed(error, state.config.cookie_secure),
+    }
+}
+
+/// Every 401 also deletes the cookie, so the browser stops sending a dead
+/// token; any other error (409 conflict, 500) leaves the cookie alone.
+fn refresh_failed(error: AuthError, secure: bool) -> Response {
+    let error = ApiError::from(error);
+    if error.status() == StatusCode::UNAUTHORIZED {
+        (CookieJar::new().add(clear_refresh_cookie(secure)), error).into_response()
+    } else {
+        error.into_response()
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/logout",
+    tag = "auth",
+    params(
+        ("dn_refresh" = Option<String>, Cookie, description = "Optional; an unknown or malformed token is ignored"),
+    ),
+    responses(
+        (status = 204, description = "Signed out; clears the `dn_refresh` cookie"),
+    )
+)]
+pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
+    let clear = CookieJar::new().add(clear_refresh_cookie(state.config.cookie_secure));
+    if let Some(cookie) = jar.get(REFRESH_COOKIE)
+        && let Err(error) = state.auth.sessions.end(cookie.value()).await
+    {
+        // Plan: logout always answers 204. The browser drops the cookie
+        // either way; the failure is kept in the server log.
+        tracing::error!(error = %error, "logout could not revoke the refresh token");
+    }
+    (StatusCode::NO_CONTENT, clear).into_response()
 }
 
 /// The refresh cookie plus the JSON body for a freshly started session.

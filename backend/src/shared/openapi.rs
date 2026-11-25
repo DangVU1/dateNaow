@@ -14,7 +14,13 @@ use crate::shared::health;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "dateNaow API"),
-    paths(health::health, auth::register, auth::login),
+    paths(
+        health::health,
+        auth::register,
+        auth::login,
+        auth::refresh,
+        auth::logout
+    ),
     components(schemas(
         ErrorResponse,
         ErrorBody,

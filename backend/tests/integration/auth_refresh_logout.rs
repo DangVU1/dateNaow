@@ -1,8 +1,9 @@
-//! Refresh tokens: the PostgreSQL repository and `SessionService::start`.
-//! The HTTP refresh and logout endpoints are tested here from Task 7 on.
+//! Refresh tokens: the PostgreSQL repository, `SessionService::start`, and
+//! the `POST /api/v1/auth/refresh` and `POST /api/v1/auth/logout` endpoints.
 
 use std::sync::Arc;
 
+use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -14,9 +15,11 @@ use datenaow::modules::auth::domain::{
 use datenaow::modules::auth::infrastructure::PgRefreshTokenRepository;
 use datenaow::modules::users::domain::{Email, NewUser, User, UserRepository};
 use datenaow::modules::users::infrastructure::PgUserRepository;
+use datenaow::shared::actor::Role;
 use datenaow::shared::clock::Clock;
+use tokio::task::JoinSet;
 
-use crate::common::{FakeClock, default_start, test_config};
+use crate::common::{FakeClock, TestApp, TestResponse, default_start, test_config};
 
 async fn create_user(pool: &PgPool, email: &str) -> User {
     PgUserRepository::new(pool.clone())
@@ -343,4 +346,319 @@ async fn each_start_issues_a_distinct_refresh_token(pool: PgPool) {
 
     assert_ne!(first.refresh_token, second.refresh_token);
     assert_eq!(stored_hashes(&pool, user.id).await.len(), 2);
+}
+
+// ---- POST /api/v1/auth/refresh and /api/v1/auth/logout ----
+
+const EMAIL: &str = "an@example.com";
+const PASSWORD: &str = "correct horse battery";
+const REFRESH: &str = "/api/v1/auth/refresh";
+const LOGOUT: &str = "/api/v1/auth/logout";
+
+/// `"dn_refresh=<value>"` taken from a response's `Set-Cookie`.
+fn cookie_pair(res: &TestResponse) -> String {
+    let value = res
+        .cookie_value("dn_refresh")
+        .expect("response sets dn_refresh");
+    format!("dn_refresh={value}")
+}
+
+/// A registered user and the refresh cookie pair from sign-up.
+async fn signed_up(pool: PgPool) -> (TestApp, String) {
+    let app = TestApp::new(pool);
+    let res = app.register(EMAIL, PASSWORD).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+    let cookie = cookie_pair(&res);
+    (app, cookie)
+}
+
+async fn sign_in(app: &TestApp) -> String {
+    let res = app
+        .post("/api/v1/auth/login")
+        .json(&serde_json::json!({ "email": EMAIL, "password": PASSWORD }))
+        .send()
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    cookie_pair(&res)
+}
+
+async fn refresh(app: &TestApp, cookie: &str) -> TestResponse {
+    app.post(REFRESH).cookie(cookie).send().await
+}
+
+fn assert_invalid_and_cleared(res: &TestResponse) {
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED, "{}", res.text);
+    assert_eq!(res.body["error"]["code"], "invalid_refresh_token");
+    let c = res
+        .set_cookie("dn_refresh")
+        .expect("401 clears the refresh cookie");
+    assert!(
+        c.starts_with("dn_refresh=;") && c.contains("Max-Age=0") && c.contains("Path=/api/v1/auth"),
+        "{c}"
+    );
+}
+
+#[sqlx::test]
+async fn refresh_with_valid_cookie_returns_new_token_and_rotates_cookie(pool: PgPool) {
+    let (app, old_cookie) = signed_up(pool).await;
+
+    let res = refresh(&app, &old_cookie).await;
+
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert!(res.body["access_token"].is_string());
+    assert_eq!(res.body["token_type"], "Bearer");
+    assert_eq!(res.body["expires_in"], 900);
+    assert_eq!(res.body["user"]["email"], EMAIL);
+    assert_eq!(res.headers["cache-control"], "no-store");
+    let set = res.set_cookie("dn_refresh").expect("new cookie");
+    assert!(
+        set.contains("HttpOnly")
+            && set.contains("SameSite=Strict")
+            && set.contains("Path=/api/v1/auth")
+            && set.contains("Max-Age=2592000"),
+        "{set}"
+    );
+    let new_cookie = cookie_pair(&res);
+    assert_ne!(new_cookie, old_cookie);
+    // The new token works in turn.
+    assert_eq!(refresh(&app, &new_cookie).await.status, StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn refreshed_token_expires_30_days_after_the_refresh(pool: PgPool) {
+    let (app, first) = signed_up(pool).await;
+    app.clock.advance(Duration::days(20));
+    let second = cookie_pair(&refresh(&app, &first).await);
+
+    // 40 days after sign-up, but only 20 days after the refresh.
+    app.clock.advance(Duration::days(20));
+    assert_eq!(refresh(&app, &second).await.status, StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn refresh_with_old_cookie_within_30s_returns_409_refresh_conflict_and_keeps_session(
+    pool: PgPool,
+) {
+    let (app, old_cookie) = signed_up(pool).await;
+    let first = refresh(&app, &old_cookie).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text);
+    let new_cookie = cookie_pair(&first);
+    // Exactly 30 seconds still counts as "within".
+    app.clock.advance(Duration::seconds(30));
+
+    let old = refresh(&app, &old_cookie).await;
+
+    assert_eq!(old.status, StatusCode::CONFLICT, "{}", old.text);
+    assert_eq!(old.body["error"]["code"], "refresh_conflict");
+    assert!(
+        old.set_cookie("dn_refresh").is_none(),
+        "409 keeps the cookie"
+    );
+    assert_eq!(refresh(&app, &new_cookie).await.status, StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn refresh_with_old_cookie_after_30s_revokes_all_sessions(pool: PgPool) {
+    let (app, old_cookie) = signed_up(pool).await;
+    let other_session = sign_in(&app).await;
+    let new_cookie = cookie_pair(&refresh(&app, &old_cookie).await);
+    app.clock.advance(Duration::seconds(31));
+
+    assert_invalid_and_cleared(&refresh(&app, &old_cookie).await);
+    assert_invalid_and_cleared(&refresh(&app, &new_cookie).await);
+    assert_invalid_and_cleared(&refresh(&app, &other_session).await);
+    // A fresh sign-in still works.
+    let again = sign_in(&app).await;
+    assert_eq!(refresh(&app, &again).await.status, StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn refresh_401_clears_the_cookie(pool: PgPool) {
+    let (app, _) = signed_up(pool).await;
+    let unknown = format!("dn_refresh={}", "ab".repeat(32));
+
+    let res = refresh(&app, &unknown).await;
+
+    assert_invalid_and_cleared(&res);
+    assert!(
+        res.set_cookie("dn_refresh")
+            .expect("cleared")
+            .contains("Max-Age=0")
+    );
+    assert_eq!(res.headers["cache-control"], "no-store");
+}
+
+#[sqlx::test]
+async fn refresh_with_malformed_cookie_returns_401_and_clears_it(pool: PgPool) {
+    let (app, _) = signed_up(pool).await;
+
+    for bad in ["dn_refresh=", "dn_refresh=not-a-token", "dn_refresh=ABCD"] {
+        assert_invalid_and_cleared(&refresh(&app, bad).await);
+    }
+}
+
+#[sqlx::test]
+async fn token_revoked_by_logout_does_not_revoke_other_sessions(pool: PgPool) {
+    let (app, a) = signed_up(pool).await;
+    let b = sign_in(&app).await;
+    let res = app.post(LOGOUT).cookie(&a).send().await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.text);
+    app.clock.advance(Duration::seconds(31));
+
+    assert_invalid_and_cleared(&refresh(&app, &a).await);
+    assert_eq!(refresh(&app, &b).await.status, StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn refresh_after_30_days_returns_401(pool: PgPool) {
+    let (app, cookie) = signed_up(pool).await;
+    app.clock.advance(Duration::days(30));
+
+    assert_invalid_and_cleared(&refresh(&app, &cookie).await);
+}
+
+#[sqlx::test]
+async fn refresh_one_second_before_30_days_succeeds(pool: PgPool) {
+    let (app, cookie) = signed_up(pool).await;
+    app.clock.advance(Duration::days(30) - Duration::seconds(1));
+
+    assert_eq!(refresh(&app, &cookie).await.status, StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn refresh_without_cookie_returns_401_invalid_refresh_token(pool: PgPool) {
+    let (app, _) = signed_up(pool).await;
+
+    let res = app.post(REFRESH).send().await;
+
+    assert_invalid_and_cleared(&res);
+}
+
+#[sqlx::test]
+async fn refresh_returns_current_role_from_database(pool: PgPool) {
+    let (app, cookie) = signed_up(pool.clone()).await;
+    let promoted = PgUserRepository::new(pool)
+        .set_role(&Email::parse(EMAIL).expect("valid"), Role::Admin)
+        .await
+        .expect("set role");
+    assert!(promoted);
+
+    let res = refresh(&app, &cookie).await;
+
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.body["user"]["role"], "admin");
+    let token = res.body["access_token"].as_str().expect("access token");
+    let config = test_config();
+    let jwt = JwtService::new(
+        config.jwt_secret.as_bytes(),
+        Duration::seconds(config.access_token_ttl_secs),
+    );
+    let claims = jwt.verify(token, app.clock.now()).expect("valid jwt");
+    assert_eq!(claims.role, Role::Admin);
+}
+
+#[sqlx::test]
+async fn refresh_for_deleted_user_returns_401(pool: PgPool) {
+    let (app, cookie) = signed_up(pool.clone()).await;
+    sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(EMAIL)
+        .execute(&pool)
+        .await
+        .expect("delete user");
+
+    assert_invalid_and_cleared(&refresh(&app, &cookie).await);
+}
+
+#[sqlx::test]
+async fn concurrent_refreshes_with_same_cookie_give_one_200_and_one_409(pool: PgPool) {
+    let (app, cookie) = signed_up(pool).await;
+
+    let mut set = JoinSet::new();
+    for _ in 0..2 {
+        let request = app.post(REFRESH).cookie(&cookie);
+        set.spawn(async move { request.send().await });
+    }
+    let results: Vec<TestResponse> = set.join_all().await;
+
+    let mut statuses: Vec<StatusCode> = results.iter().map(|r| r.status).collect();
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [StatusCode::OK, StatusCode::CONFLICT],
+        "{results:?}"
+    );
+    let winner = results
+        .iter()
+        .find(|r| r.status == StatusCode::OK)
+        .expect("one refresh succeeded");
+    assert_eq!(
+        refresh(&app, &cookie_pair(winner)).await.status,
+        StatusCode::OK,
+        "the session survives the race"
+    );
+}
+
+#[sqlx::test]
+async fn logout_revokes_token_and_clears_cookie(pool: PgPool) {
+    let (app, cookie) = signed_up(pool).await;
+
+    let res = app.post(LOGOUT).cookie(&cookie).send().await;
+
+    assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.text);
+    assert_eq!(res.headers["cache-control"], "no-store");
+    let c = res.set_cookie("dn_refresh").expect("logout clears cookie");
+    assert!(
+        c.contains("Max-Age=0") && c.contains("Path=/api/v1/auth"),
+        "{c}"
+    );
+    assert_invalid_and_cleared(&refresh(&app, &cookie).await);
+}
+
+#[sqlx::test]
+async fn logout_without_cookie_returns_204(pool: PgPool) {
+    let app = TestApp::new(pool);
+
+    let res = app.post(LOGOUT).send().await;
+
+    assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.text);
+    let c = res.set_cookie("dn_refresh").expect("logout clears cookie");
+    assert!(c.contains("Max-Age=0"), "{c}");
+}
+
+#[sqlx::test]
+async fn logout_with_unknown_or_malformed_cookie_returns_204(pool: PgPool) {
+    let (app, cookie) = signed_up(pool).await;
+    let unknown = format!("dn_refresh={}", "cd".repeat(32));
+
+    for bad in [unknown.as_str(), "dn_refresh=garbage"] {
+        let res = app.post(LOGOUT).cookie(bad).send().await;
+        assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.text);
+        assert!(
+            res.set_cookie("dn_refresh")
+                .expect("cleared")
+                .contains("Max-Age=0")
+        );
+    }
+    // Logging out twice with the same token is fine too.
+    for _ in 0..2 {
+        let res = app.post(LOGOUT).cookie(&cookie).send().await;
+        assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.text);
+    }
+    assert_invalid_and_cleared(&refresh(&app, &cookie).await);
+}
+
+#[sqlx::test(migrations = false)]
+async fn openapi_lists_refresh_and_logout(pool: PgPool) {
+    let res = TestApp::new(pool).get("/api/v1/openapi.json").send().await;
+
+    assert!(
+        res.body["paths"][REFRESH]["post"].is_object(),
+        "{}",
+        res.text
+    );
+    assert!(
+        res.body["paths"][LOGOUT]["post"].is_object(),
+        "{}",
+        res.text
+    );
 }
