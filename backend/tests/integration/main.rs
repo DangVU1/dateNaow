@@ -4,6 +4,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod auth_refresh_logout;
 mod errors;
 mod health;
 mod openapi;

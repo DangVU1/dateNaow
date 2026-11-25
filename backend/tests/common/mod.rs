@@ -37,6 +37,7 @@ pub fn test_config() -> Config {
         request_timeout: Duration::from_secs(15),
         jwt_secret: "test-jwt-secret-that-is-at-least-32-bytes".to_owned(),
         access_token_ttl_secs: 900,
+        refresh_token_ttl_days: 30,
         // Small Argon2 parameters keep password hashing fast in tests.
         argon2_memory_kib: 1024,
         argon2_iterations: 1,

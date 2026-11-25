@@ -15,6 +15,11 @@ const DEFAULT_ACCESS_TOKEN_TTL_SECS: i64 = 900;
 use crate::modules::auth::application::services::jwt::MIN_SECRET_BYTES as MIN_JWT_SECRET_BYTES;
 /// Upper bound for the access token lifetime (one day), so `iat + ttl` cannot overflow.
 const MAX_ACCESS_TOKEN_TTL_SECS: i64 = 86_400;
+/// Default refresh-token lifetime: 30 days (P3).
+const DEFAULT_REFRESH_TOKEN_TTL_DAYS: i64 = 30;
+/// Upper bound for the refresh-token lifetime (one year), so
+/// `chrono::Duration::days` and `now + ttl` cannot overflow.
+const MAX_REFRESH_TOKEN_TTL_DAYS: i64 = 365;
 
 /// Runtime configuration. `Debug` is written by hand so secrets never reach logs.
 #[derive(Clone)]
@@ -30,6 +35,8 @@ pub struct Config {
     pub jwt_secret: String,
     /// Access-token lifetime in seconds (P3).
     pub access_token_ttl_secs: i64,
+    /// Refresh-token lifetime in days, counted from each sign-in or refresh (P3).
+    pub refresh_token_ttl_days: i64,
     /// Argon2id memory cost in KiB (P4).
     pub argon2_memory_kib: u32,
     /// Argon2id number of passes (P4).
@@ -82,6 +89,17 @@ impl Config {
                 "ACCESS_TOKEN_TTL_SECS must be a whole number from 1 to {MAX_ACCESS_TOKEN_TTL_SECS}"
             )
         })?;
+        let refresh_token_ttl_days = optional_number(
+            &lookup,
+            "REFRESH_TOKEN_TTL_DAYS",
+            DEFAULT_REFRESH_TOKEN_TTL_DAYS,
+            |n: &i64| (1..=MAX_REFRESH_TOKEN_TTL_DAYS).contains(n),
+        )
+        .ok_or_else(|| {
+            anyhow!(
+                "REFRESH_TOKEN_TTL_DAYS must be a whole number from 1 to {MAX_REFRESH_TOKEN_TTL_DAYS}"
+            )
+        })?;
         let argon2_number = |key: &str, default: u32| {
             optional_number(&lookup, key, default, |_: &u32| true)
                 .ok_or_else(|| anyhow!("{key} must be a whole number"))
@@ -94,6 +112,7 @@ impl Config {
             request_timeout: Duration::from_secs(request_timeout_secs),
             jwt_secret,
             access_token_ttl_secs,
+            refresh_token_ttl_days,
             argon2_memory_kib: argon2_number("ARGON2_MEMORY_KIB", argon2::Params::DEFAULT_M_COST)?,
             argon2_iterations: argon2_number("ARGON2_ITERATIONS", argon2::Params::DEFAULT_T_COST)?,
             argon2_parallelism: argon2_number(
@@ -143,6 +162,7 @@ impl fmt::Debug for Config {
             .field("request_timeout", &self.request_timeout)
             .field("jwt_secret", &"***")
             .field("access_token_ttl_secs", &self.access_token_ttl_secs)
+            .field("refresh_token_ttl_days", &self.refresh_token_ttl_days)
             .field("argon2_memory_kib", &self.argon2_memory_kib)
             .field("argon2_iterations", &self.argon2_iterations)
             .field("argon2_parallelism", &self.argon2_parallelism)
@@ -184,6 +204,7 @@ mod tests {
         let config = Config::from_lookup(lookup_from(&minimal_with(&[]))).unwrap();
         assert_eq!(config.jwt_secret, TEST_SECRET);
         assert_eq!(config.access_token_ttl_secs, 900);
+        assert_eq!(config.refresh_token_ttl_days, 30);
         assert_eq!(config.argon2_memory_kib, argon2::Params::DEFAULT_M_COST);
         assert_eq!(config.argon2_iterations, argon2::Params::DEFAULT_T_COST);
         assert_eq!(config.argon2_parallelism, argon2::Params::DEFAULT_P_COST);
@@ -195,12 +216,14 @@ mod tests {
     fn reads_auth_settings() {
         let config = Config::from_lookup(lookup_from(&minimal_with(&[
             ("ACCESS_TOKEN_TTL_SECS", "600"),
+            ("REFRESH_TOKEN_TTL_DAYS", "14"),
             ("ARGON2_MEMORY_KIB", "65536"),
             ("ARGON2_ITERATIONS", "3"),
             ("ARGON2_PARALLELISM", "2"),
         ])))
         .unwrap();
         assert_eq!(config.access_token_ttl_secs, 600);
+        assert_eq!(config.refresh_token_ttl_days, 14);
         assert_eq!(config.argon2_memory_kib, 65536);
         assert_eq!(config.argon2_iterations, 3);
         assert_eq!(config.argon2_parallelism, 2);
@@ -246,6 +269,23 @@ mod tests {
             )])));
             assert!(result.is_err(), "{value} should be rejected");
         }
+    }
+
+    #[test]
+    fn invalid_refresh_token_ttl_is_an_error() {
+        for value in ["0", "-1", "abc", "1.5", "366", "9223372036854775807"] {
+            let result = Config::from_lookup(lookup_from(&minimal_with(&[(
+                "REFRESH_TOKEN_TTL_DAYS",
+                value,
+            )])));
+            assert!(result.is_err(), "{value} should be rejected");
+        }
+        let max = Config::from_lookup(lookup_from(&minimal_with(&[(
+            "REFRESH_TOKEN_TTL_DAYS",
+            "365",
+        )])))
+        .unwrap();
+        assert_eq!(max.refresh_token_ttl_days, 365);
     }
 
     #[test]
