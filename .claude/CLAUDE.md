@@ -10,19 +10,19 @@ dateNaow is a mobile-first web app for couples (dating or newly met) in Saigon (
 |---|---|
 | Product requirements, scope, recommendation rules | `docs/superpowers/specs/2026-11-23-datenaow-design.md` |
 | Stack, architecture, engineering conventions | This file |
+| Decision log (date, decision, rationale, superseded entries) | `docs/DECISIONS.md` |
 | Cross-project working rules (approval, reporting, language) | Global `~/.claude/CLAUDE.md` |
 
 Rules for reading the spec:
-- The spec status is **draft, pending approval**. Re-check its status before implementing.
-- Unlabelled items in the spec are the project owner's decisions.
-- Items labelled **[Đề xuất]** are proposals, **not** approved decisions. Do not treat them as final; confirm with the owner when an implementation depends on one.
-- Items listed in spec §9 ("Để lại cho người xây dựng") are left to the implementer: propose a choice, then record it here or in the spec once approved.
+- The spec was **approved in full on 2026-11-25**. Every item in it is a decision; changing one needs the owner's approval and an entry in `docs/DECISIONS.md`.
+- Items listed in spec §9 ("Để lại cho người xây dựng") are left to the implementer: propose a choice, then record it in `docs/DECISIONS.md` (and here or in the spec, where it belongs) once approved.
 
 ### 0.2 Current state
 
 - No application code yet. The repository contains only `.claude/` and `docs/`.
-- No commits yet.
+- Commits so far: the initial `.claude/` + draft spec, then the approved spec, decision log and implementation plans (2026-11-25). Nothing pushed.
 - Stack versions are not pinned yet (see §2).
+- Implementation is split into four plans (`docs/DECISIONS.md` #5). Roadmap: `docs/superpowers/plans/2026-11-25-datenaow-roadmap.md`. Plan 1 (foundation + accounts) is approved (`docs/DECISIONS.md` #9) and will be executed subagent-driven (#10). Plan file: `docs/superpowers/plans/2026-11-25-plan-1-foundation-accounts.md`.
 
 Update this section when the state changes materially (scaffolding done, first release, etc.).
 
@@ -105,14 +105,22 @@ The stack below is the project owner's decision (spec §3). Do not replace any c
 | Build Tool | Vite |
 | Language | TypeScript |
 | Target | Mobile-first web app; admin area at `/admin` in the same app |
+| Router | React Router v8, library (declarative) mode |
+| Server state | TanStack Query v5 |
+| Client state | React Context + `useReducer` (no global store library) |
+| Folder structure | Feature-based: `src/app/`, `src/features/<feature>/`, `src/shared/` |
+| Lint / format | ESLint (flat config, typescript-eslint, react-hooks rules) + Prettier |
+| Testing | Vitest + React Testing Library + jsdom; Playwright e2e from plan 3 |
 
-State management, router, and component structure are not decided yet (spec §9). Propose them with trade-offs and get approval before scaffolding.
+Approved 2026-11-25 (`docs/DECISIONS.md` #6).
 
 ### 2.3 Infrastructure
 
 | Component | Technology |
 |---|---|
-| Local environment | Docker Compose: backend, PostgreSQL, Mailpit (dev email) |
+| Local environment | Docker Compose: backend, PostgreSQL 18, Mailpit (dev email) |
+
+Extra backend crates approved on 2026-11-25 (`docs/DECISIONS.md` #7): tower-http, tracing-subscriber, axum-extra (cookies), uuid, dotenvy, chrono. Failed-login limits use a PostgreSQL counter table, not a rate-limiting crate.
 
 ### 2.4 Versions
 
@@ -138,7 +146,7 @@ Each module must:
 - Expose functionality through controlled interfaces.
 - Avoid accessing another module's internal implementation directly.
 
-Planned modules (spec §8 — module split is a **[Đề xuất]**, confirm before scaffolding):
+Modules (spec §8, approved 2026-11-25):
 
 | Module | Responsibility |
 |---|---|
@@ -220,7 +228,7 @@ Avoid global mutable state and unnecessary service locators.
 
 ## 4. Standard Project Structure
 
-Repository root layout (**[Đề xuất]** — not decided yet; confirm when scaffolding):
+Repository root layout (approved 2026-11-25):
 
 ```text
 dateNaow/
@@ -239,7 +247,6 @@ backend/
 ├── .env.example
 ├── .gitignore
 ├── Dockerfile
-├── docker-compose.yml
 │
 ├── migrations/
 ├── docs/

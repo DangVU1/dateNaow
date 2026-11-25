@@ -1,8 +1,8 @@
 # dateNaow: Thiết kế sản phẩm
 
-*Ngày: 2026-11-23 · Trạng thái: bản nháp, chờ duyệt*
+*Ngày: 2026-11-23 · Trạng thái: đã duyệt (2026-11-25)*
 
-Ghi chú cách đọc: mục nào **không** có nhãn là quyết định của chủ dự án. Mục có nhãn **[Đề xuất]** là quyết định do người viết tài liệu đưa ra, chủ dự án có thể sửa.
+Ghi chú cách đọc: chủ dự án đã duyệt toàn bộ tài liệu ngày 2026-11-25, kể cả các mục trước đây là đề xuất. Mọi nội dung trong tài liệu là quyết định đã chốt. Muốn thay đổi thì cần chủ dự án duyệt lại và ghi vào `docs/DECISIONS.md`.
 
 ---
 
@@ -83,18 +83,29 @@ Hai câu hỏi trung tâm là "đi đâu?" và "tặng gì?". Lời đáp đư�
 ### 6.1 Tài khoản và đăng nhập
 - Đăng ký và đăng nhập bằng email và mật khẩu. Mật khẩu được băm bằng Argon2. Phiên đăng nhập dùng JWT.
 - Quên mật khẩu: gửi email chứa link đặt lại. Link dùng một lần và có hạn dùng.
-- **[Đề xuất]** Access token sống ngắn (khoảng 15 phút). Refresh token sống dài (khoảng 30 ngày), được lưu trong cookie httpOnly và có thể thu hồi. Như vậy người dùng không phải đăng nhập lại thường xuyên.
-- **[Đề xuất]** Gửi email bằng SMTP qua crate `lettre`. Môi trường phát triển dùng Mailpit trong docker-compose. Nhà cung cấp SMTP thật do người triển khai chọn.
-- **[Đề xuất]** Giới hạn số lần đăng nhập sai theo IP và theo email.
+- Access token sống ngắn (khoảng 15 phút). Refresh token sống dài (khoảng 30 ngày), được lưu trong cookie httpOnly và có thể thu hồi. Như vậy người dùng không phải đăng nhập lại thường xuyên.
+- Gửi email bằng SMTP qua crate `lettre`. Môi trường phát triển dùng Mailpit trong docker-compose. Nhà cung cấp SMTP thật do người triển khai chọn.
+- Giới hạn số lần đăng nhập sai theo IP và theo email.
+- Trong phần cài đặt tài khoản có mục **giới tính**, dùng để quyết định ai được gợi ý quà vào một số ngày lễ (xem 7.3).
+  - Có các lựa chọn Nam, Nữ, Khác và Không muốn nói. Mục này không bắt buộc và đổi được bất cứ lúc nào. Giới tính không bao giờ hiện cho người kia.
 
 ### 6.2 Liên kết hai người
 - A bấm "Liên kết người ấy" và nhận một mã ngắn, ví dụ `MEO-4827`, cùng một link. **Mã hết hạn sau 24 giờ** và chỉ dùng được một lần.
 - B nhập mã hoặc mở link là hai tài khoản thành một cặp.
 - Liên kết **giữ nguyên vĩnh viễn** cho đến khi một người bấm hủy. Hai người không phải liên kết lại khi đăng nhập lại hay đổi thiết bị.
 - Mỗi người chỉ thuộc tối đa **một** cặp tại một thời điểm. Nếu đang thuộc một cặp thì không tạo được mã mời mới và không nhập được mã của người khác.
-- **Một người hủy là hủy liên kết.** Ghi chú "Về người ấy" của mỗi bên vẫn được giữ riêng.
-- **[Đề xuất]** Khi hủy, các buổi hẹn chưa diễn ra của cặp đó bị hủy theo. Buổi hẹn đã diễn ra vẫn được giữ làm lịch sử của từng người.
-- **[Đề xuất]** Khi liên kết, người dùng có thể nhập **ngày bắt đầu yêu nhau**, dùng cho dịp kỷ niệm.
+- **Một người hủy là hủy liên kết.** Ghi chú của mỗi bên vẫn là của riêng người đó.
+- **Mỗi người chỉ có một bộ ghi chú đang dùng**, gồm "Về người ấy" và danh sách mong muốn của chính mình. Hệ thống không tạo nhiều hồ sơ cho nhiều người.
+- **Khi hủy liên kết**, với **cả hai người**, mèo xuất hiện và hỏi: "Bạn có muốn làm mới ghi chú không?".
+  - Nếu **có**: xóa toàn bộ "Về người ấy" và toàn bộ danh sách mong muốn của người đó.
+  - Nếu **không**: giữ nguyên.
+  - Hệ thống làm đúng theo lựa chọn.
+  - Làm mới nghĩa là **xóa vĩnh viễn**, có bước xác nhận lần hai vì không hoàn tác được. Lịch sử "đã gợi ý" của cặp cũ cũng bị xóa theo.
+- **Khi liên kết với người mới**, mèo xuất hiện và hỏi: "Bạn có muốn cập nhật ghi chú không?".
+  - Bấm "Có" sẽ mở kho "Về người ấy" và danh sách mong muốn để người dùng sửa. Bấm "Không" thì giữ nguyên. Ghi chú đang có sẽ được dùng để gợi ý cho người mới.
+- **Người chưa từng liên kết** tự quản lý ghi chú của mình. Hệ thống không hỏi gì.
+- Khi hủy, các buổi hẹn chưa diễn ra của cặp đó bị hủy theo. Buổi hẹn đã diễn ra vẫn được giữ làm lịch sử của từng người.
+- Khi liên kết, người dùng có thể nhập **ngày bắt đầu yêu nhau**, dùng cho dịp kỷ niệm.
 
 ### 6.3 Kho "Về người ấy"
 - Gồm các ghi chú tự do về người ấy: thích gì, ghét gì, hay nói gì, dị ứng gì. Có thêm trường riêng cho **ngày sinh** của người ấy.
@@ -121,7 +132,7 @@ Một buổi hẹn gồm:
 
 **Chế độ bất ngờ:**
 - Người lên kế hoạch xem gợi ý địa điểm (mục 7.1) rồi tự chốt.
-- **[Đề xuất]** Người kia **không thấy gì** về buổi hẹn bất ngờ, kể cả ngày giờ. Muốn báo trước thì người lên kế hoạch tự báo bên ngoài app.
+- Người kia **không thấy gì** về buổi hẹn bất ngờ, kể cả ngày giờ. Muốn báo trước thì người lên kế hoạch tự báo bên ngoài app.
 
 **Ngân sách quà là của từng người:** nếu cả hai cùng muốn tặng quà trong một buổi hẹn, mỗi người nhập ngân sách quà riêng. Ngân sách của người này không bao giờ hiện cho người kia.
 
@@ -139,8 +150,8 @@ Một buổi hẹn gồm:
   4. B bấm ✕: khung chat báo "Người ấy muốn xem chỗ khác", và cả hai lại chọn được.
 - Mỗi lúc chỉ có **một lựa chọn đang chờ** trong một buổi hẹn. Trong lúc chờ, nút "Chọn" bị khóa.
 - Nếu B đang không mở app, lựa chọn được lưu ở trạng thái chờ. Màn hình mờ và thẻ nảy lên sẽ xuất hiện **khi B mở buổi hẹn**.
-- **[Đề xuất]** A được hủy lựa chọn mình đang chờ.
-- **[Đề xuất]** Sau khi chốt, hai người vẫn có thể "chọn lại", tức là bắt đầu một vòng chọn mới. Chỗ đã chốt chỉ bị thay khi vòng mới được chốt.
+- A được hủy lựa chọn mình đang chờ.
+- Sau khi chốt, hai người vẫn có thể "chọn lại", tức là bắt đầu một vòng chọn mới. Chỗ đã chốt chỉ bị thay khi vòng mới được chốt.
 - Bản mockup tham khảo (vẽ trong cuộc trao đổi): khung điện thoại; thanh trên cùng ghi tên người ấy và "Buổi hẹn tối thứ 7 · ngân sách 500k"; các thẻ địa điểm xếp ngang và cuộn được.
 
 ### 6.7 Chú mèo pixel và câu "Bạn có biết?"
@@ -150,8 +161,14 @@ Một buổi hẹn gồm:
   - **Kích thước nhỏ**, khoảng 96px chiều ngang trên điện thoại, để không che nhiều màn hình.
 - **Khung nói:** hình bầu dục viền đậm, có đuôi chỉ về phía mèo. Dòng đầu luôn là **"Bạn có biết?"**, bên dưới là gợi ý. Ví dụ: *"Người ấy từng nói thích thư giãn. Một hộp nến thơm tầm 300k là vừa đẹp!"*
 - Hình vẽ cuối cùng do họa sĩ pixel làm, có vài khung hình động (ló ra, giơ tay). Mockup trong cuộc trao đổi chỉ để tham khảo bố cục.
-- **Khi nào mèo xuất hiện:** khi người tặng mở app trong **khoảng thời gian trước một dịp tặng quà** (mục 7.3) và có gợi ý cho dịp đó.
-- **[Đề xuất]** Mèo hiện ở trang chủ và trang buổi hẹn. Bấm vào khung nói thì khung thu gọn lại. Có nút "Gợi ý khác" để lấy món có điểm cao tiếp theo.
+- **Mèo làm những việc sau** (chi tiết thời điểm ở mục 7.3):
+  - nhắc trước dịp: 7 ngày khi chưa chuẩn bị, 3 ngày khi đã chuẩn bị;
+  - gợi ý quà ngẫu nhiên sau khi buổi hẹn đã có ngày;
+  - trả lời khi người dùng tự hỏi gợi ý quà;
+  - hỏi ngân sách quà;
+  - hỏi làm mới hoặc cập nhật ghi chú khi hủy hoặc tạo liên kết (6.2).
+- Mèo **không** gợi ý địa điểm.
+- Mèo hiện ở trang chủ và trang buổi hẹn. Bấm vào khung nói thì khung thu gọn lại.
 
 ### 6.8 Trang quản trị
 Chỉ người dùng có vai trò `admin` mới vào được. Trang quản trị cho phép:
@@ -165,7 +182,7 @@ Chỉ người dùng có vai trò `admin` mới vào được. Trang quản tr�
   - loại hình (quán ăn, cà phê, hoạt động…).
 - **Quản lý kho ý tưởng quà:** tên, khoảng giá, thẻ, dịp phù hợp.
 - **Quản lý từ điển từ khóa** (7.2) và xem **danh sách từ khóa chưa nhận ra**.
-- **[Đề xuất]** Điểm đánh giá do quản trị viên nhập, thang 1-5, có thể tham khảo Google Maps. Tọa độ do quản trị viên dán vào. Có thể thêm nút đổi địa chỉ thành tọa độ bằng Goong hoặc Nominatim của OpenStreetMap, nhưng không bắt buộc.
+- Điểm đánh giá do quản trị viên nhập, thang 1-5, có thể tham khảo Google Maps. Tọa độ do quản trị viên dán vào. Có thể thêm nút đổi địa chỉ thành tọa độ bằng Goong hoặc Nominatim của OpenStreetMap, nhưng không bắt buộc.
 - Bản đầu có khoảng **50-100 địa điểm** ở các quận trung tâm Sài Gòn.
 
 ## 7. Luật gợi ý
@@ -179,13 +196,13 @@ Chỉ người dùng có vai trò `admin` mới vào được. Trang quản tr�
 
 **Các bước:**
 1. **Điểm giữa:** lấy trung điểm tọa độ của hai người.
-   - **[Đề xuất]** Vị trí của chính người đang xem lấy từ định vị của trình duyệt lúc lập kế hoạch. Nếu người dùng không cho phép định vị thì cho nhập khu vực hoặc quận.
-   - **[Đề xuất]** Vị trí của người kia trong chế độ cùng chọn lấy từ định vị khi người kia mở buổi hẹn. Trong chế độ bất ngờ, người lên kế hoạch nhập khu vực hoặc quận của người ấy. Không hỏi người ấy, để giữ bất ngờ.
+   - Vị trí của chính người đang xem lấy từ định vị của trình duyệt lúc lập kế hoạch. Nếu người dùng không cho phép định vị thì cho nhập khu vực hoặc quận.
+   - Vị trí của người kia trong chế độ cùng chọn lấy từ định vị khi người kia mở buổi hẹn. Trong chế độ bất ngờ, người lên kế hoạch nhập khu vực hoặc quận của người ấy. Không hỏi người ấy, để giữ bất ngờ.
    - Vị trí **chỉ dùng để gợi ý địa điểm đi chơi**.
-   - **[Đề xuất]** Không lưu lịch sử vị trí. Chỉ giữ vị trí gần nhất gắn với buổi hẹn.
+   - Không lưu lịch sử vị trí. Chỉ giữ vị trí gần nhất gắn với buổi hẹn.
 2. **Lọc theo bán kính** quanh điểm giữa.
-   - **[Đề xuất]** Bán kính mặc định 5km. Nếu tìm được ít hơn 3 kết quả thì nới lên 10km.
-   - **[Đề xuất]** Tính khoảng cách bằng công thức haversine trên cột lat/lng thường, không cần PostGIS ở quy mô này.
+   - Bán kính mặc định 5km. Nếu tìm được ít hơn 3 kết quả thì nới lên 10km.
+   - Tính khoảng cách bằng công thức haversine trên cột lat/lng thường, không cần PostGIS ở quy mô này.
 3. **Lọc theo ngân sách:** chỉ giữ địa điểm có `giá tối thiểu mỗi người × 2 ≤ ngân sách đi chơi`.
 4. **Lọc giờ mở cửa** theo thời gian buổi hẹn, nếu địa điểm có nhập giờ mở cửa.
 5. **Xếp hạng**, ưu tiên theo thứ tự:
@@ -193,7 +210,7 @@ Chỉ người dùng có vai trò `admin` mới vào được. Trang quản tr�
    - khớp nhiều thẻ sở thích;
    - gần điểm giữa;
    - giá sát ngân sách.
-   - **[Đề xuất]** Cụ thể là cộng điểm có trọng số, với trọng số được cấu hình được.
+   - Cụ thể là cộng điểm có trọng số, với trọng số được cấu hình được.
 
 ### 7.2 Phân tích câu tự do bằng từ điển từ khóa
 Áp dụng cho cả mong muốn lẫn ghi chú "Về người ấy". Đây là một domain service thuần, không phụ thuộc hạ tầng nên dễ viết test.
@@ -212,9 +229,9 @@ Chỉ người dùng có vai trò `admin` mới vào được. Trang quản tr�
 4. **Một câu nhiều món** ("muốn son hoặc nước hoa") được tách thành nhiều mong muốn con.
 5. **Thiếu giá:** dùng khoảng giá trung bình của loại quà đó trong kho ý tưởng quà.
 6. Những từ có nghĩa nhưng không có trong từ điển được ghi vào **danh sách từ khóa chưa nhận ra** để quản trị viên bổ sung dần.
-   - **[Đề xuất]** Để bảo vệ quyền riêng tư, danh sách này chỉ lưu **từng từ hoặc cụm 1-3 từ riêng lẻ, kèm số lần xuất hiện**. Không lưu câu gốc, không lưu ngữ cảnh xung quanh, không gắn với người dùng nào. Quản trị viên không bao giờ thấy được nội dung câu riêng tư của người dùng.
+   - Để bảo vệ quyền riêng tư, danh sách này chỉ lưu **từng từ hoặc cụm 1-3 từ riêng lẻ, kèm số lần xuất hiện**. Không lưu câu gốc, không lưu ngữ cảnh xung quanh, không gắn với người dùng nào. Quản trị viên không bao giờ thấy được nội dung câu riêng tư của người dùng.
 
-- **[Đề xuất]** Từ điển lưu trong cơ sở dữ liệu để quản trị viên sửa được mà không phải deploy lại. Từ điển được nạp vào bộ nhớ lúc khởi động và nạp lại khi quản trị viên sửa.
+- Từ điển lưu trong cơ sở dữ liệu để quản trị viên sửa được mà không phải deploy lại. Từ điển được nạp vào bộ nhớ lúc khởi động và nạp lại khi quản trị viên sửa.
 - Từ điển ban đầu cần **vài trăm từ khóa** cho các loại quà phổ biến.
 
 ### 7.3 Dịp tặng quà và lúc mèo xuất hiện
@@ -226,16 +243,48 @@ Chỉ người dùng có vai trò `admin` mới vào được. Trang quản tr�
   - 8/3;
   - 20/10;
   - 24/12 và 25/12 (Giáng sinh);
-  - **Thất tịch** (ngày 7/7 âm lịch).
+  - **Thất tịch** (ngày 7/7 âm lịch);
+  - 19/11 (Quốc tế Nam giới).
 - **Sinh nhật người ấy**, lấy từ kho "Về người ấy".
-- **[Đề xuất]** **Ngày kỷ niệm yêu nhau**, mỗi năm một lần.
+- **Ngày kỷ niệm yêu nhau**, mỗi năm một lần.
 
 **Quy tắc:**
-- **[Đề xuất]** Thất tịch dùng **bảng ngày dương lịch nhập sẵn** cho từng năm, ví dụ 2026 đến 2035, thay vì tự viết thuật toán đổi lịch âm.
+- **"Đã chuẩn bị" cho một dịp** nghĩa là người dùng đã làm **ít nhất một** trong hai việc:
+  - tạo buổi hẹn rơi vào đúng ngày của dịp;
+  - nhập ngân sách quà cho dịp đó.
+- **Nhắc trước 7 ngày (khi chưa chuẩn bị).**
+  - Mèo nói: "Còn 7 ngày nữa là {dịp}, bạn muốn chuẩn bị gì không?".
+  - Có ba nút: **Tạo buổi hẹn**, **Gợi ý quà**, **Không**. Bấm "Không" thì mèo không nhắc gì nữa cho dịp đó.
+- **Nhắc trước 3 ngày.**
+  - **Đã chuẩn bị:** mèo hỏi "Còn 3 ngày nữa, bạn đã sẵn sàng cho buổi date chưa?".
+  - **Chưa chuẩn bị** và chưa bấm "Không": mèo nhắc lần cuối "Chỉ còn 3 ngày nữa thôi, bạn chưa chuẩn bị gì nè!".
+- Sinh nhật và ngày kỷ niệm cũng được nhắc theo đúng cách này.
+- **Gợi ý quà ngẫu nhiên sau khi đã có ngày đi date.**
+  - Khi một buổi hẹn đã có ngày, mèo **xuất hiện ngẫu nhiên** trong lúc người dùng dùng app để gợi ý quà cho buổi hẹn đó.
+  - Mèo **ngừng hẳn** khi người dùng đã chọn được quà, hoặc đã báo không chuẩn bị quà.
+  - Khung nói có bốn nút:
+    - **Chốt món này:** ghi nhận đã chọn quà, và món đó vào lịch sử "đã gợi ý";
+    - **Gợi ý khác:** chuyển sang món có điểm cao tiếp theo;
+    - **Mình tự lo quà rồi:** tính là đã chọn được quà;
+    - **Không tặng quà lần này**.
+  - **Tần suất:** mỗi buổi hẹn mèo gợi ý **tối đa 3 lần**, chia đều theo thời gian còn lại từ lúc buổi hẹn có ngày cho đến hết ngày diễn ra.
+    - Cách chia: khoảng thời gian đó được chia thành 3 đoạn bằng nhau. Mỗi đoạn có một thời điểm ngẫu nhiên; mèo hiện ở lần mở app đầu tiên sau thời điểm đó, nếu vẫn còn trong đoạn. Ví dụ: tạo hẹn sáng thứ 2 cho tối thứ 7 thì có 3 đoạn khoảng 2 ngày, mèo hiện một lần trong mỗi đoạn. Người dùng không mở app trong một đoạn thì đoạn đó bỏ qua, không dồn sang đoạn sau.
+    - Không quá một lần mỗi ngày. Vì vậy buổi hẹn còn dưới 3 ngày sẽ được gợi ý ít hơn 3 lần.
+  - Nếu buổi hẹn chưa có ngân sách quà thì lần đầu mèo hỏi ngân sách.
+- **Tự hỏi gợi ý quà.**
+  - Người dùng bấm vào mèo hoặc nút "Gợi ý quà" bất cứ lúc nào.
+  - Mèo hỏi: "Quà này cho **dịp lễ** hay **đi date thường**?". Chọn dịp lễ thì mèo hỏi tiếp là dịp nào.
+  - Đang ở trong một buổi hẹn hay một dịp cụ thể thì mèo không hỏi lại.
+  - Dù là dịp lễ hay date thường, quà **luôn được gợi ý theo ngân sách** (7.4). Khác biệt duy nhất nằm ở tiêu chí "hợp với dịp".
+- **Ngày lễ theo giới tính:**
+  - 8/3 và 20/10 chỉ gợi ý cho tài khoản **Nam**.
+  - 19/11 chỉ gợi ý cho tài khoản **Nữ**.
+  - Tài khoản chưa chọn giới tính, hoặc chọn Khác hay Không muốn nói, vẫn được mèo hỏi vào cả ba ngày này để không bị bỏ sót.
+  - Các dịp còn lại (14/2, 14/3, Giáng sinh, Thất tịch, sinh nhật, kỷ niệm, buổi hẹn) gợi ý cho cả hai người.
+- Thất tịch dùng **bảng ngày dương lịch nhập sẵn** cho từng năm, ví dụ 2026 đến 2035, thay vì tự viết thuật toán đổi lịch âm.
 - Mèo xuất hiện khi người tặng **mở app** trong khoảng thời gian trước dịp. Không có thông báo đẩy và không có email nhắc.
-- **[Đề xuất]** Khoảng thời gian đó là **3 ngày** trước dịp, kéo dài đến hết ngày diễn ra dịp.
-- **[Đề xuất]** Với ngày lễ, sinh nhật và kỷ niệm (không có buổi hẹn kèm ngân sách), mèo hỏi ngân sách quà ngay trong khung nói trước khi đưa gợi ý. Ngân sách này được lưu cho dịp đó.
-- **[Đề xuất]** Không cần tác vụ chạy nền theo lịch. Hệ thống tính dịp sắp tới ngay khi người dùng mở app. Như vậy không phải làm thêm phần lập lịch.
+- Ngân sách quà nhập trong khung nói của mèo được lưu cho đúng dịp đó.
+- Không cần tác vụ chạy nền theo lịch. Hệ thống tính dịp sắp tới ngay khi người dùng mở app. Như vậy không phải làm thêm phần lập lịch.
 
 ### 7.4 Chọn quà
 **Đầu vào:**
@@ -252,7 +301,7 @@ Chỉ người dùng có vai trò `admin` mới vào được. Trang quản tr�
 |---|---|
 | Người nhận ghi "rất muốn" | +3 |
 | Mỗi thẻ trùng với "Về người ấy" | +2 |
-| Hợp với dịp (thẻ dịp của loại quà) | +1 |
+| Hợp với dịp (thẻ dịp của loại quà; với date thường thì bỏ qua tiêu chí này) | +1 |
 | Giá ≥ 80% ngân sách | +1 |
 | Đã được gợi ý ở dịp trước | −3 |
 | Trùng thẻ "không thích" | loại luôn |
@@ -263,13 +312,13 @@ Chỉ người dùng có vai trò `admin` mới vào được. Trang quản tr�
 
 **Giữ bất ngờ:**
 - Người tặng thấy món được gợi ý và lý do, nhưng **không thấy câu gốc** của người nhận.
-  - **[Đề xuất]** Câu thoại chỉ dùng tên món và thẻ, không trích nguyên văn câu người nhận đã ghi.
+  - Câu thoại chỉ dùng tên món và thẻ, không trích nguyên văn câu người nhận đã ghi.
 - Người nhận **không thấy** mong muốn nào của mình đã được gợi ý. Lịch sử "đã gợi ý" chỉ dùng nội bộ cho tiêu chí −3.
 
 ## 8. Kiến trúc (khung)
 
 ### Backend
-Modular monolith theo Clean Architecture, cấu trúc như trong `.claude/CLAUDE.md`. **[Đề xuất]** Gồm các module sau:
+Modular monolith theo Clean Architecture, cấu trúc như trong `.claude/CLAUDE.md`. Gồm các module sau:
 
 | Module | Trách nhiệm |
 |---|---|
@@ -287,7 +336,7 @@ Modular monolith theo Clean Architecture, cấu trúc như trong `.claude/CLAUDE
 **Cập nhật tức thì:**
 - Dùng WebSocket sẵn có của Axum cho khung chat chọn địa điểm.
 - Xác thực bằng JWT lúc mở kết nối, và kiểm tra người dùng thuộc cặp của buổi hẹn đó.
-- **[Đề xuất]** Kết nối được quản lý trong bộ nhớ của tiến trình bằng `tokio::sync::broadcast` theo từng buổi hẹn. Không dùng Redis, vì chạy một instance là đủ.
+- Kết nối được quản lý trong bộ nhớ của tiến trình bằng `tokio::sync::broadcast` theo từng buổi hẹn. Không dùng Redis, vì chạy một instance là đủ.
 - Trạng thái thật luôn nằm trong PostgreSQL. Khi kết nối lại, client tải lại toàn bộ trạng thái của buổi hẹn.
 
 **Phân quyền** phải được kiểm tra ở tầng application, không chỉ ở middleware:
@@ -303,8 +352,8 @@ Modular monolith theo Clean Architecture, cấu trúc như trong `.claude/CLAUDE
 
 ### Hạ tầng
 - Dùng Docker Compose: backend, PostgreSQL, Mailpit (môi trường phát triển).
-- **[Đề xuất]** Ảnh địa điểm lưu ở thư mục được backend phục vụ trực tiếp trong bản đầu. Chuyển sang object storage khi triển khai thật.
-- **[Đề xuất]** Frontend và API chạy **cùng một origin**. Một reverse proxy (ví dụ Caddy hoặc Nginx) phục vụ bản build của frontend và chuyển `/api` cùng WebSocket sang backend. Khi đó cookie refresh token dùng `SameSite=Strict` và không cần cấu hình CORS. Khi phát triển, Vite proxy `/api` sang backend.
+- Ảnh địa điểm lưu ở thư mục được backend phục vụ trực tiếp trong bản đầu. Chuyển sang object storage khi triển khai thật.
+- Frontend và API chạy **cùng một origin**. Một reverse proxy (ví dụ Caddy hoặc Nginx) phục vụ bản build của frontend và chuyển `/api` cùng WebSocket sang backend. Khi đó cookie refresh token dùng `SameSite=Strict` và không cần cấu hình CORS. Khi phát triển, Vite proxy `/api` sang backend.
 
 ## 9. Để lại cho người xây dựng
 - Tên bảng, cột, index và constraint cụ thể.
