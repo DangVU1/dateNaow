@@ -103,6 +103,17 @@ export function refreshAccessToken(): Promise<AuthResponse | null> {
   return refreshInFlight;
 }
 
+/**
+ * Resolves once no refresh is running. Sign-out awaits this so a refresh
+ * that was already in flight cannot store a token after the session ended,
+ * and so the logout request carries the newest refresh cookie.
+ */
+export async function waitForPendingRefresh(): Promise<void> {
+  while (refreshInFlight !== null) {
+    await refreshInFlight;
+  }
+}
+
 async function refreshWithConflictRetry(): Promise<AuthResponse | null> {
   try {
     return await refreshOnce();
