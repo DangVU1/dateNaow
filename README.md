@@ -54,3 +54,9 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+## Third-party data
+
+The backend embeds the SecLists `10k-most-common.txt` password list (MIT licence,
+Copyright (c) 2018 Daniel Miessler) to reject common passwords; see
+`backend/src/modules/auth/domain/value_objects/common_passwords/SECLISTS_LICENSE`.

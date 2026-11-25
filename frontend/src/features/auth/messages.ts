@@ -39,6 +39,10 @@ export function fieldMessage(field: string, code: string): string {
   if (field === 'password' || field === 'new_password') {
     if (code === 'too_short') return 'Mật khẩu cần ít nhất 8 ký tự.';
     if (code === 'too_long') return 'Mật khẩu dài tối đa 128 ký tự.';
+    // Only the backend knows the common-password list (DECISIONS #16).
+    if (code === 'too_common') {
+      return 'Mật khẩu này quá phổ biến, dễ bị đoán. Bạn chọn mật khẩu khác nhé.';
+    }
   }
   if (field === 'confirm_password' && code === 'mismatch') {
     return 'Hai mật khẩu chưa khớp nhau.';

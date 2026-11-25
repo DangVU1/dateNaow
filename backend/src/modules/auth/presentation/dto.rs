@@ -1,8 +1,9 @@
 //! Request and response shapes for `/api/v1/auth`.
 //!
 //! The request fields carry no `#[validate]` rules: the 64 KiB body limit
-//! caps their size, and the domain (`Email::parse`, `PlainPassword::parse`)
-//! returns the field codes (`too_short`, `too_long`, `invalid_email`, ...).
+//! caps their size, and the domain (`Email::parse`, `PlainPassword::parse`,
+//! `PlainPassword::parse_new`) returns the field codes (`too_short`,
+//! `too_long`, `too_common`, `invalid_email`, ...).
 
 use std::fmt;
 

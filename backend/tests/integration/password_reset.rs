@@ -465,6 +465,40 @@ async fn short_new_password_returns_422_and_token_stays_usable(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn common_new_password_returns_422_too_common_and_token_stays_usable(pool: PgPool) {
+    let (app, _) = registered(pool).await;
+    let token = reset_token(&app, 1).await;
+
+    for common in ["password", "Iloveyou", "anhyeuem123"] {
+        let res = confirm(&app, &token, common).await;
+        assert_eq!(
+            res.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{common}: {}",
+            res.text
+        );
+        assert_eq!(res.body["error"]["code"], "validation_error");
+        assert_eq!(
+            res.body["error"]["fields"],
+            json!({ "new_password": ["too_common"] }),
+            "{common}"
+        );
+    }
+    // The rejected password was not set.
+    assert_eq!(
+        login(&app, EMAIL, "password").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let retry = confirm(&app, &token, NEW_PASSWORD).await;
+    assert_eq!(retry.status, StatusCode::NO_CONTENT, "{}", retry.text);
+    assert_eq!(
+        login(&app, EMAIL, NEW_PASSWORD).await.status,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test]
 async fn invalid_password_is_reported_before_a_bad_token(pool: PgPool) {
     let app = TestApp::new(pool);
 

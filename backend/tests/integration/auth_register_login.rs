@@ -11,6 +11,9 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tokio::task::JoinSet;
 
+use datenaow::modules::auth::application::services::PasswordHashService;
+use datenaow::modules::auth::domain::PlainPassword;
+
 use crate::common::{TestApp, TestResponse};
 
 const EMAIL: &str = "an@example.com";
@@ -124,6 +127,45 @@ async fn register_password_of_129_chars_returns_422_too_long(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn register_common_password_returns_422_too_common_and_creates_no_user(pool: PgPool) {
+    let app = TestApp::new(pool.clone());
+
+    // In the SecLists list, in a different case, and in the Vietnamese list.
+    for common in ["password", "PassWord", "12345678", "matkhau123"] {
+        let res = app.register(EMAIL, common).await;
+
+        assert_eq!(
+            res.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{common}: {}",
+            res.text
+        );
+        assert_eq!(res.body["error"]["code"], "validation_error");
+        assert_eq!(
+            res.body["error"]["fields"],
+            json!({ "password": ["too_common"] }),
+            "{common}"
+        );
+        assert!(res.set_cookie("dn_refresh").is_none());
+    }
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&pool)
+        .await
+        .expect("count users");
+    assert_eq!(users, 0);
+}
+
+#[sqlx::test]
+async fn register_short_common_password_still_reports_too_short(pool: PgPool) {
+    let app = TestApp::new(pool);
+
+    let res = app.register(EMAIL, "123456").await;
+
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(res.body["error"]["fields"]["password"][0], "too_short");
+}
+
+#[sqlx::test]
 async fn register_reports_email_and_password_errors_together(pool: PgPool) {
     let app = TestApp::new(pool);
 
@@ -192,6 +234,52 @@ async fn login_with_correct_password_returns_200_and_cookie(pool: PgPool) {
         "{c}"
     );
     assert!(!res.text.contains("$argon2"));
+}
+
+/// Gives `EMAIL`'s account the password `raw` directly in the database, the
+/// way an account created before DECISIONS #16 could have it.
+async fn set_password_directly(pool: &PgPool, raw: &str) {
+    let params = crate::common::test_config()
+        .argon2_params()
+        .expect("valid test params");
+    let hash = PasswordHashService::new(params)
+        .hash(&PlainPassword::parse(raw.to_owned()).expect("valid length"))
+        .await
+        .expect("hash password");
+    let updated = sqlx::query("UPDATE users SET password_hash = $1 WHERE email = $2")
+        .bind(hash)
+        .bind(EMAIL)
+        .execute(pool)
+        .await
+        .expect("update password hash");
+    assert_eq!(updated.rows_affected(), 1);
+}
+
+#[sqlx::test]
+async fn login_still_works_for_an_account_with_a_common_password(pool: PgPool) {
+    let app = registered(pool.clone()).await;
+    set_password_directly(&pool, "password1").await;
+
+    let res = login(&app, EMAIL, "password1").await;
+
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+}
+
+#[sqlx::test]
+async fn wrong_common_password_guesses_are_counted_by_the_limiter(pool: PgPool) {
+    // Regression guard (#16): sign-in must keep `PlainPassword::parse`; if it
+    // used the common-password list, these guesses would skip the limiter.
+    let app = registered(pool).await;
+    for _ in 0..5 {
+        let res = login(&app, EMAIL, "password").await;
+        assert_eq!(res.status, StatusCode::UNAUTHORIZED, "{}", res.text);
+        assert_eq!(res.body["error"]["code"], "invalid_credentials");
+    }
+
+    let res = login(&app, EMAIL, PASSWORD).await;
+
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS, "{}", res.text);
+    assert_eq!(res.body["error"]["code"], "rate_limited");
 }
 
 #[sqlx::test]

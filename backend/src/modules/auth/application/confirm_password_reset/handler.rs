@@ -52,8 +52,9 @@ where
     /// token, all in one transaction. A malformed, unknown, used or expired
     /// token gives `InvalidOrExpiredResetToken`.
     pub async fn execute(&self, cmd: ConfirmPasswordResetCommand) -> Result<(), AuthError> {
-        // 1. The password first, so a typo does not burn the token.
-        let password = PlainPassword::parse(cmd.new_password).map_err(|e| {
+        // 1. The password first, so a typo or a common password (#16) does
+        //    not burn the token.
+        let password = PlainPassword::parse_new(cmd.new_password).map_err(|e| {
             let mut fields = FieldErrors::new();
             fields.insert("new_password".to_owned(), vec![e.code().to_owned()]);
             AuthError::Validation(fields)

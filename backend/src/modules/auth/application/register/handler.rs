@@ -22,13 +22,15 @@ impl<U: UserRepository, R: RefreshTokenRepository> RegisterHandler<U, R> {
         }
     }
 
-    /// Validates email and password (reporting both at once), hashes the
+    /// Validates email and password (reporting both at once; the password
+    /// may be `too_short`, `too_long` or `too_common`), hashes the
     /// password, creates the user and starts a session.
     pub async fn execute(&self, cmd: RegisterCommand) -> Result<(User, Session), AuthError> {
         let email = Email::parse(&cmd.email);
         // Counts characters before any hashing, so an oversized password is
-        // rejected without running Argon2 (P4).
-        let password = PlainPassword::parse(cmd.password);
+        // rejected without running Argon2 (P4); a new password must also not
+        // be a common one (#16).
+        let password = PlainPassword::parse_new(cmd.password);
 
         let (email, password) = match (email, password) {
             (Ok(email), Ok(password)) => (email, password),

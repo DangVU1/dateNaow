@@ -31,7 +31,7 @@ const SECS_PER_DAY: i64 = 86_400;
         (status = 201, description = "Account created and signed in; sets the `dn_refresh` cookie", body = AuthResponse),
         (status = 400, description = "Malformed JSON or unknown field", body = ErrorResponse),
         (status = 409, description = "`email_taken`", body = ErrorResponse),
-        (status = 422, description = "Invalid email or password; see `fields`", body = ErrorResponse),
+        (status = 422, description = "Invalid email or password; see `fields`. Password codes: `too_short`, `too_long`, `too_common`", body = ErrorResponse),
     )
 )]
 pub async fn register(
@@ -172,7 +172,7 @@ pub async fn request_password_reset(
     responses(
         (status = 204, description = "Password changed; every refresh token of the user is revoked"),
         (status = 400, description = "`invalid_or_expired_token`: malformed, unknown, used or expired token; or malformed JSON (`invalid_json`)", body = ErrorResponse),
-        (status = 422, description = "Invalid new password; see `fields.new_password`. The token stays usable", body = ErrorResponse),
+        (status = 422, description = "Invalid new password (`too_short`, `too_long`, `too_common`); see `fields.new_password`. The token stays usable", body = ErrorResponse),
     )
 )]
 pub async fn confirm_password_reset(

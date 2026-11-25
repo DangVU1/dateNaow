@@ -41,7 +41,7 @@ Bạn có thể đồng ý cả bảng hoặc phản đối từng mục. Mục 
 |---|---|---|
 | **P1** | **Quy ước cơ sở dữ liệu.** Tên bảng ở dạng số nhiều, `snake_case` (`users`, `refresh_tokens`). Khóa chính là `id UUID DEFAULT uuidv7()`, dùng hàm có sẵn của PostgreSQL 18. Thời gian dùng `timestamptz`. Giá trị liệt kê lưu dạng `TEXT` kèm `CHECK`, không dùng kiểu `ENUM` của Postgres. Index đặt tên `idx_<bảng>_<cột>`, ràng buộc unique đặt `uq_<bảng>_<cột>`. Tên file migration bắt đầu bằng timestamp. Tiền VND (từ kế hoạch 2) lưu bằng `BIGINT`. | UUIDv7 tăng dần theo thời gian nên index gọn hơn UUID ngẫu nhiên. Dùng `TEXT` + `CHECK` thì muốn thêm giá trị mới chỉ cần sửa một dòng `CHECK`. |
 | **P2** | **Quy ước API.** Mọi đường dẫn có tiền tố `/api/v1`. JSON dùng `snake_case`. Lỗi luôn có dạng `{"error":{"code":"...","message":"...","fields":{...}}}`. Mã HTTP: 400 JSON hỏng hoặc sai kiểu, 401 chưa đăng nhập hoặc sai thông tin, 403 không đủ quyền, 404, 408 quá thời gian, 409 trùng hoặc xung đột, 413 body quá lớn, 422 dữ liệu sai luật kèm `fields`, 429 kèm `Retry-After`, 500 chỉ trả câu chung chung. Phản hồi của `/api/v1/auth/*` và `/api/v1/me` có `Cache-Control: no-store`. | Frontend chỉ cần đọc `code` (và tên trường) để hiện câu tiếng Việt phù hợp. Ví dụ `email_taken` thì hiện "Email này đã có tài khoản.". |
-| **P4** | **Mật khẩu** dài 8-128 ký tự (đếm ký tự, không đếm byte). Không bắt buộc phải có chữ hoa hay ký hiệu. Argon2id dùng tham số mặc định của crate argon2 (khoảng 19 MiB, 2 vòng, 1 luồng), chỉnh được qua cấu hình. Khi test thì dùng tham số nhỏ để chạy nhanh. Việc băm chạy trong `spawn_blocking`. | Đây là cách NIST khuyên: mật khẩu dài quan trọng hơn mật khẩu phức tạp. Giới hạn 128 ký tự cùng giới hạn kích thước body chặn được trường hợp gửi mật khẩu thật dài để làm server băm rất lâu. |
+| **P4** | **Mật khẩu** dài 8-128 ký tự (đếm ký tự, không đếm byte). Không bắt buộc phải có chữ hoa hay ký hiệu. Argon2id dùng tham số mặc định của crate argon2 (khoảng 19 MiB, 2 vòng, 1 luồng), chỉnh được qua cấu hình. Khi test thì dùng tham số nhỏ để chạy nhanh. Việc băm chạy trong `spawn_blocking`. *Bổ sung theo DECISIONS #16:* đăng ký và đặt lại mật khẩu còn từ chối mật khẩu nằm trong danh sách mật khẩu phổ biến (mã `too_common`); đăng nhập không kiểm tra danh sách này. | Đây là cách NIST khuyên: mật khẩu dài quan trọng hơn mật khẩu phức tạp. Giới hạn 128 ký tự cùng giới hạn kích thước body chặn được trường hợp gửi mật khẩu thật dài để làm server băm rất lâu. |
 | **P7** | **Tạo admin** bằng lệnh `cargo run --bin make_admin -- <email>`. Khi gọi API quản trị, hệ thống đọc lại vai trò từ DB chứ không tin vai trò ghi trong JWT. | Không có trang đăng ký admin, nên không ai tự phong mình làm admin được. Khi một admin bị hạ quyền, việc hạ quyền có hiệu lực ngay. |
 | **P8** | **OpenAPI:** chỉ phục vụ file JSON tại `/api/v1/openapi.json`. Chưa dùng Swagger UI. | Researcher chưa xác nhận được `utoipa-swagger-ui` và `utoipa-axum` chạy được với utoipa 6. Muốn có giao diện xem tài liệu thì duyệt thêm sau. |
 | **P9** | **Middleware:** timeout 15 giây (trả lỗi JSON 408), body tối đa 64 KiB qua `DefaultBodyLimit` của axum (trả lỗi JSON 413; kế hoạch 3 sẽ nới riêng cho route tải ảnh), header `x-request-id` cho mỗi request và ghi vào log của request đó. | |
@@ -391,7 +391,7 @@ async fn set_password_hash_in_tx_is_rolled_back_with_transaction(pool: PgPool) {
 
 **Interfaces:**
 - Produces:
-  - `auth::domain::PlainPassword`. `PlainPassword::parse(String) -> Result<PlainPassword, PasswordError>` đếm `chars().count()`, chỉ nhận từ 8 đến 128. `PasswordError::{TooShort, TooLong}` ứng với mã `"too_short"`, `"too_long"`. `Debug` in ra `PlainPassword(***)`. Có `expose(&self) -> &str`.
+  - `auth::domain::PlainPassword`. `PlainPassword::parse(String) -> Result<PlainPassword, PasswordError>` đếm `chars().count()`, chỉ nhận từ 8 đến 128. `PasswordError::{TooShort, TooLong}` ứng với mã `"too_short"`, `"too_long"`. `Debug` in ra `PlainPassword(***)`. Có `expose(&self) -> &str`. *Bổ sung theo #16:* `PlainPassword::parse_new` (dùng khi đặt mật khẩu mới) kiểm tra thêm danh sách mật khẩu phổ biến, trả `PasswordError::TooCommon` (mã `"too_common"`); `parse` (đăng nhập) chỉ kiểm tra độ dài.
   - `auth::application::services::PasswordHashService::new(params: argon2::Params)`. Có hai hàm `async fn hash(&self, p: &PlainPassword) -> Result<String, HashError>` và `async fn verify(&self, p: &PlainPassword, phc_hash: &str) -> Result<bool, HashError>`. Cả hai chạy trong `tokio::task::spawn_blocking`. Thêm `async fn verify_dummy(&self, p: &PlainPassword)`: băm thử với một mã băm giả tạo sẵn lúc khởi tạo, để đăng nhập bằng email lạ tốn thời gian ngang với email có thật.
   - `auth::application::services::JwtService::new(secret: &[u8], access_ttl: chrono::Duration)`, có:
     - `issue(&self, user_id: Uuid, role: Role, now: DateTime<Utc>) -> Result<String, TokenError>`
@@ -528,7 +528,7 @@ fn tampered_payload_is_rejected() / fn token_signed_with_other_secret_is_rejecte
   - DTO:
     - `RegisterRequest` / `LoginRequest { email: String, password: String }` có `#[serde(deny_unknown_fields)]`.
       - Hai trường không gắn `#[validate(length)]` riêng. Giới hạn 64 KiB của body đã chặn dữ liệu quá lớn.
-      - Domain (`Email::parse`, `PlainPassword::parse`) trả các mã lỗi `too_short` / `too_long` / `invalid_email`, nên mã lỗi trùng với `messages.ts` ở frontend.
+      - Domain (`Email::parse`, `PlainPassword::parse`) trả các mã lỗi `too_short` / `too_long` / `invalid_email` (và `too_common` từ `PlainPassword::parse_new`, theo DECISIONS #16), nên mã lỗi trùng với `messages.ts` ở frontend.
       - Thứ tự xử lý: `PlainPassword::parse` đếm ký tự trước khi băm, nên chuỗi 60 KiB bị từ chối ngay, không phải chạy Argon2.
     - `AuthResponse { access_token: String, token_type: "Bearer", expires_in: i64, user: UserResponse }`
     - `UserResponse { id: Uuid, email: String, role: "user" | "admin", gender: Option<"male" | "female" | "other" | "prefer_not_to_say"> }` nằm ở `users::presentation::dto` (task này tạo file đó), có `impl From<&User> for UserResponse`. `auth` dùng lại kiểu này.
@@ -924,6 +924,7 @@ test('resolves undefined on 204')
       - `email` + `too_long`: "Email dài quá."
       - `password` hoặc `new_password` + `too_short`: "Mật khẩu cần ít nhất 8 ký tự."
       - `password` hoặc `new_password` + `too_long`: "Mật khẩu dài tối đa 128 ký tự."
+      - `password` hoặc `new_password` + `too_common` (DECISIONS #16): "Mật khẩu này quá phổ biến, dễ bị đoán. Bạn chọn mật khẩu khác nhé."
       - Mặc định: "Giá trị chưa hợp lệ."
   - Form có `<label>` cho từng ô, `autocomplete="email"` và `autocomplete="current-password"` hoặc `"new-password"`. Nút gửi bị khóa trong lúc chờ. Kiểm tra độ dài mật khẩu ngay trên trình duyệt trước khi gọi API.
   - `HomePage` hiện "Xin chào, {email}", link "Cài đặt" và nút "Đăng xuất". Các kế hoạch sau sẽ thay nội dung trang này.

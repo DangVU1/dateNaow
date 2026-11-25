@@ -138,6 +138,26 @@ test('ResetPasswordPage shows a server 422 for new_password on its field', async
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
 
+test('ResetPasswordPage shows the server too_common error on the new password', async () => {
+  vi.mocked(confirmPasswordReset).mockRejectedValue(
+    new ApiError(422, 'validation_error', undefined, {
+      fields: { new_password: ['too_common'] },
+    }),
+  );
+  openResetLink('/reset-password#token=abc123');
+  await fillAndSubmit('password', 'password');
+
+  expect(
+    await screen.findByText(
+      'Mật khẩu này quá phổ biến, dễ bị đoán. Bạn chọn mật khẩu khác nhé.',
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByLabelText('Mật khẩu mới')).toHaveAttribute(
+    'aria-invalid',
+    'true',
+  );
+});
+
 test('ResetPasswordPage signs a signed-in user out locally after a reset', async () => {
   vi.mocked(refreshAccessToken).mockResolvedValue(
     authResponse('an@example.com', 'tok-1'),

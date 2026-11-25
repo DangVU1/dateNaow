@@ -7,3 +7,5 @@ Dockerfile text eol=lf
 docker-compose*.yml text eol=lf
 .env.example text eol=lf
 *.sql text eol=lf
+# Embedded with include_str!: keep these byte-for-byte (LF) on every checkout.
+backend/src/modules/auth/domain/value_objects/common_passwords/* text eol=lf

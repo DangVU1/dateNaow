@@ -55,6 +55,28 @@ test('SignUpPage shows field messages from server 422 by field and code', async 
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
 
+test('SignUpPage shows the server too_common error on the password field', async () => {
+  vi.mocked(register).mockRejectedValue(
+    new ApiError(422, 'validation_error', undefined, {
+      fields: { password: ['too_common'] },
+    }),
+  );
+  renderApp('/sign-up');
+  // Long enough for the client check, so only the server can reject it.
+  await fillAndSubmit('an@example.com', 'password');
+
+  expect(
+    await screen.findByText(
+      'Mật khẩu này quá phổ biến, dễ bị đoán. Bạn chọn mật khẩu khác nhé.',
+    ),
+  ).toBeInTheDocument();
+  expect(register).toHaveBeenCalledTimes(1);
+  expect(screen.getByLabelText('Mật khẩu')).toHaveAttribute(
+    'aria-invalid',
+    'true',
+  );
+});
+
 test('SignUpPage shows email_taken message', async () => {
   vi.mocked(register).mockRejectedValue(new ApiError(409, 'email_taken'));
   renderApp('/sign-up');
