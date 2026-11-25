@@ -153,6 +153,8 @@ Backend versions verified on 2026-11-25 (plan 1, Task 1) with `cargo search` / `
 | sqlx-cli (global tool) | 0.9.1 | | installed globally |
 | PostgreSQL image | `postgres:18.7` (latest 18.x tag) | | |
 | Mailpit image | `axllent/mailpit:v1.34.0` | | |
+| Rust build image (backend Dockerfile) | `rust:1.100.0-slim-trixie` (Debian 13.8; verified 2026-11-25, plan 1 Task 10) | | |
+| Debian runtime image (backend Dockerfile) | `debian:trixie-20261123-slim` (dated snapshot of Debian 13.8 `trixie-slim`; verified 2026-11-25) | | |
 
 Frontend versions are verified and recorded here in plan 1, Task 11.
 

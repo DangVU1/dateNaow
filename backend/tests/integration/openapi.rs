@@ -31,3 +31,25 @@ async fn openapi_documents_password_reset(pool: PgPool) {
         );
     }
 }
+
+#[sqlx::test(migrations = false)]
+async fn openapi_lists_all_plan_1_paths(pool: PgPool) {
+    let res = TestApp::new(pool).get("/api/v1/openapi.json").send().await;
+    assert_eq!(res.status, StatusCode::OK);
+    for (path, method) in [
+        ("/api/v1/health", "get"),
+        ("/api/v1/auth/register", "post"),
+        ("/api/v1/auth/login", "post"),
+        ("/api/v1/auth/refresh", "post"),
+        ("/api/v1/auth/logout", "post"),
+        ("/api/v1/auth/password-reset/request", "post"),
+        ("/api/v1/auth/password-reset/confirm", "post"),
+        ("/api/v1/me", "get"),
+        ("/api/v1/me", "patch"),
+    ] {
+        assert!(
+            res.body["paths"][path][method].is_object(),
+            "missing {method} {path}"
+        );
+    }
+}
