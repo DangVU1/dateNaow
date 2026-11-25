@@ -53,7 +53,7 @@ impl<U: UserRepository, R: RefreshTokenRepository> RegisterHandler<U, R> {
             .users
             .create(NewUser {
                 email,
-                password_hash,
+                password_hash: password_hash.clone(),
             })
             .await
             .map_err(|e| match e {
@@ -61,7 +61,7 @@ impl<U: UserRepository, R: RefreshTokenRepository> RegisterHandler<U, R> {
                 other => AuthError::internal(other),
             })?;
 
-        let session = self.sessions.start(&user).await?;
+        let session = self.sessions.start(&user, &password_hash).await?;
         tracing::info!(user_id = %user.id, "user registered");
         Ok((user, session))
     }

@@ -89,7 +89,12 @@ where
             .await
             .map_err(AuthError::internal)?
             .ok_or(AuthError::InvalidCredentials)?;
-        let session = self.sessions.start(&user).await?;
+        // Stored only if the password is still the one just verified: a
+        // reset that committed meanwhile makes this sign-in fail (P6).
+        let session = self
+            .sessions
+            .start(&user, &credentials.password_hash)
+            .await?;
         tracing::info!(user_id = %user.id, "user signed in");
         Ok((user, session))
     }

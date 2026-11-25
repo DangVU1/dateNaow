@@ -65,15 +65,31 @@ impl<U: UserRepository, R: RefreshTokenRepository> SessionService<U, R> {
 
     /// Starts a new session for `user`: issues an access token and stores the
     /// hash of a new refresh token that expires `refresh_ttl` from now.
-    pub async fn start(&self, user: &User) -> Result<Session, AuthError> {
+    ///
+    /// `password_hash` is the hash the caller just verified (sign-in) or
+    /// stored (sign-up). If a password reset replaced it in the meantime, no
+    /// token is stored and the result is `InvalidCredentials` (P6).
+    pub async fn start(&self, user: &User, password_hash: &str) -> Result<Session, AuthError> {
         let now = self.clock.now();
         let refresh_token = OpaqueToken::generate().map_err(AuthError::internal)?;
         let refresh_expires_at = self.refresh_expiry(now)?;
 
-        self.tokens
-            .insert(user.id, refresh_token.hash(), refresh_expires_at)
+        match self
+            .tokens
+            .insert(
+                user.id,
+                password_hash,
+                refresh_token.hash(),
+                refresh_expires_at,
+            )
             .await
-            .map_err(AuthError::internal)?;
+        {
+            Ok(_) => {}
+            Err(RefreshRepoError::CredentialsChanged) => {
+                return Err(AuthError::InvalidCredentials);
+            }
+            Err(e) => return Err(AuthError::internal(e)),
+        }
 
         self.session(user, refresh_token, refresh_expires_at, now)
     }
@@ -285,6 +301,7 @@ mod tests {
         async fn insert(
             &self,
             user_id: Uuid,
+            _: &str,
             token_hash: [u8; 32],
             expires_at: DateTime<Utc>,
         ) -> Result<RefreshTokenRecord, RefreshRepoError> {
@@ -328,7 +345,7 @@ mod tests {
                     record.replaced_at = Some(now);
                 }
             }
-            self.insert(user_id, new_hash, new_expires_at).await
+            self.insert(user_id, "", new_hash, new_expires_at).await
         }
 
         async fn revoke(&self, id: Uuid, _: DateTime<Utc>) -> Result<(), RefreshRepoError> {

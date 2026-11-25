@@ -6,6 +6,7 @@ mod common;
 
 mod auth_refresh_logout;
 mod auth_register_login;
+mod auth_session_races;
 mod errors;
 mod health;
 mod me_and_admin;

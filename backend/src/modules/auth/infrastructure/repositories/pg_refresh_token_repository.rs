@@ -45,21 +45,31 @@ impl RefreshTokenRepository for PgRefreshTokenRepository {
     async fn insert(
         &self,
         user_id: Uuid,
+        password_hash: &str,
         token_hash: [u8; 32],
         expires_at: DateTime<Utc>,
     ) -> Result<RefreshTokenRecord, RefreshRepoError> {
+        // One statement: `FOR SHARE` waits for a password reset that has
+        // updated the user row but not committed yet, then re-checks the hash
+        // against the committed row. So either the reset commits first and
+        // nothing is inserted, or this insert commits first and the reset's
+        // later revocation sees the new token.
         let row = sqlx::query_as!(
             RefreshTokenRow,
             r#"INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-               VALUES ($1, $2, $3)
+               SELECT id, $2::bytea, $3::timestamptz FROM users
+               WHERE id = $1 AND password_hash = $4
+               FOR SHARE
                RETURNING id, user_id, expires_at, revoked_at, replaced_at"#,
             user_id,
             &token_hash[..],
             expires_at,
+            password_hash,
         )
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(database)?;
+        .map_err(database)?
+        .ok_or(RefreshRepoError::CredentialsChanged)?;
 
         Ok(row.into())
     }
@@ -90,6 +100,20 @@ impl RefreshTokenRepository for PgRefreshTokenRepository {
         now: DateTime<Utc>,
     ) -> Result<RefreshTokenRecord, RefreshRepoError> {
         let mut tx = self.pool.begin().await.map_err(database)?;
+
+        // Lock order: the user row first, then their tokens, as in
+        // `revoke_all_for_user` and the password-reset transaction. `FOR
+        // SHARE` lets rotations of different tokens run side by side but
+        // waits for (and is waited on by) a revoke-all or password change.
+        // Without it, a revoke-all blocked on the old row would skip it once
+        // this commits and never see the new row (READ COMMITTED snapshot).
+        sqlx::query!(
+            "SELECT 1 AS locked FROM users WHERE id = $1 FOR SHARE",
+            user_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database)?;
 
         // The `revoked_at IS NULL` condition makes the row lock decide a race:
         // of two concurrent rotations of the same token, only one updates it.
@@ -146,15 +170,29 @@ impl RefreshTokenRepository for PgRefreshTokenRepository {
         user_id: Uuid,
         now: DateTime<Utc>,
     ) -> Result<u64, RefreshRepoError> {
+        let mut tx = self.pool.begin().await.map_err(database)?;
+
+        // Same lock order as `rotate`: the user row first. This waits for
+        // running rotations and sign-ins of the user to commit, so the UPDATE
+        // below (a new statement, hence a new snapshot) sees their new tokens.
+        sqlx::query!(
+            "SELECT 1 AS locked FROM users WHERE id = $1 FOR NO KEY UPDATE",
+            user_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database)?;
+
         let result = sqlx::query!(
             "UPDATE refresh_tokens SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL",
             user_id,
             now,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(database)?;
 
+        tx.commit().await.map_err(database)?;
         Ok(result.rows_affected())
     }
 }

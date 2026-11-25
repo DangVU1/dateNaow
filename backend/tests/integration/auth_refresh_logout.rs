@@ -8,6 +8,7 @@ use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use datenaow::modules::auth::application::AuthError;
 use datenaow::modules::auth::application::services::{JwtService, SessionService, TokenError};
 use datenaow::modules::auth::domain::{
     OpaqueToken, RefreshRepoError, RefreshTokenRecord, RefreshTokenRepository,
@@ -21,11 +22,14 @@ use tokio::task::JoinSet;
 
 use crate::common::{FakeClock, TestApp, TestResponse, default_start, test_config};
 
+/// The stored password hash of every user created by `create_user`.
+const PASSWORD_HASH: &str = "not-a-real-hash";
+
 async fn create_user(pool: &PgPool, email: &str) -> User {
     PgUserRepository::new(pool.clone())
         .create(NewUser {
             email: Email::parse(email).expect("valid test email"),
-            password_hash: "not-a-real-hash".to_owned(),
+            password_hash: PASSWORD_HASH.to_owned(),
         })
         .await
         .expect("create user")
@@ -55,7 +59,7 @@ async fn insert_then_find_by_hash_returns_active_record(pool: PgPool) {
     let expires = t0() + Duration::days(30);
 
     let inserted = repo
-        .insert(user.id, hash_of(1), expires)
+        .insert(user.id, PASSWORD_HASH, hash_of(1), expires)
         .await
         .expect("insert");
     let found = find(&repo, hash_of(1)).await;
@@ -78,7 +82,12 @@ async fn rotate_marks_old_revoked_and_inserts_new(pool: PgPool) {
     let user = create_user(&pool, "an@example.com").await;
     let repo = PgRefreshTokenRepository::new(pool);
     let old = repo
-        .insert(user.id, hash_of(1), t0() + Duration::days(30))
+        .insert(
+            user.id,
+            PASSWORD_HASH,
+            hash_of(1),
+            t0() + Duration::days(30),
+        )
         .await
         .expect("insert");
     let now = t0() + Duration::hours(1);
@@ -107,7 +116,12 @@ async fn rotate_already_revoked_returns_already_revoked(pool: PgPool) {
     let user = create_user(&pool, "an@example.com").await;
     let repo = PgRefreshTokenRepository::new(pool);
     let old = repo
-        .insert(user.id, hash_of(1), t0() + Duration::days(30))
+        .insert(
+            user.id,
+            PASSWORD_HASH,
+            hash_of(1),
+            t0() + Duration::days(30),
+        )
         .await
         .expect("insert");
     let expires = t0() + Duration::days(31);
@@ -140,7 +154,7 @@ async fn rotate_already_revoked_returns_already_revoked(pool: PgPool) {
 
     // A token revoked by logout cannot be rotated either.
     let logged_out = repo
-        .insert(user.id, hash_of(4), expires)
+        .insert(user.id, PASSWORD_HASH, hash_of(4), expires)
         .await
         .expect("insert");
     repo.revoke(logged_out.id, t0()).await.expect("revoke");
@@ -163,9 +177,11 @@ async fn revoke_all_for_user_revokes_every_active_token_only_for_that_user(pool:
     let repo = PgRefreshTokenRepository::new(pool);
     let expires = t0() + Duration::days(30);
     for hash in [hash_of(1), hash_of(2), hash_of(3)] {
-        repo.insert(alice.id, hash, expires).await.expect("insert");
+        repo.insert(alice.id, PASSWORD_HASH, hash, expires)
+            .await
+            .expect("insert");
     }
-    repo.insert(bob.id, hash_of(9), expires)
+    repo.insert(bob.id, PASSWORD_HASH, hash_of(9), expires)
         .await
         .expect("insert");
     let earlier = find(&repo, hash_of(3)).await;
@@ -198,7 +214,12 @@ async fn revoke_sets_revoked_at_but_leaves_replaced_at_null(pool: PgPool) {
     let user = create_user(&pool, "an@example.com").await;
     let repo = PgRefreshTokenRepository::new(pool);
     let record = repo
-        .insert(user.id, hash_of(1), t0() + Duration::days(30))
+        .insert(
+            user.id,
+            PASSWORD_HASH,
+            hash_of(1),
+            t0() + Duration::days(30),
+        )
         .await
         .expect("insert");
     let now = t0() + Duration::minutes(5);
@@ -220,9 +241,14 @@ async fn revoke_sets_revoked_at_but_leaves_replaced_at_null(pool: PgPool) {
 async fn deleting_user_deletes_their_refresh_tokens(pool: PgPool) {
     let user = create_user(&pool, "an@example.com").await;
     let repo = PgRefreshTokenRepository::new(pool.clone());
-    repo.insert(user.id, hash_of(1), t0() + Duration::days(30))
-        .await
-        .expect("insert");
+    repo.insert(
+        user.id,
+        PASSWORD_HASH,
+        hash_of(1),
+        t0() + Duration::days(30),
+    )
+    .await
+    .expect("insert");
 
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user.id)
@@ -281,7 +307,11 @@ async fn start_returns_jwt_valid_for_900s_and_stores_only_hash(pool: PgPool) {
     let f = session_service(&pool);
     let now = f.clock.now();
 
-    let session = f.service.start(&user).await.expect("start session");
+    let session = f
+        .service
+        .start(&user, PASSWORD_HASH)
+        .await
+        .expect("start session");
 
     assert_eq!(session.access_expires_in_secs, 900);
     let claims = f
@@ -325,7 +355,11 @@ async fn start_sets_refresh_expiry_30_days_from_now(pool: PgPool) {
     f.clock.advance(Duration::minutes(7));
     let now = f.clock.now();
 
-    let session = f.service.start(&user).await.expect("start session");
+    let session = f
+        .service
+        .start(&user, PASSWORD_HASH)
+        .await
+        .expect("start session");
 
     assert_eq!(session.refresh_expires_at, now + Duration::days(30));
     let record = PgRefreshTokenRepository::new(pool.clone())
@@ -337,12 +371,32 @@ async fn start_sets_refresh_expiry_30_days_from_now(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn start_after_password_change_is_invalid_credentials_and_stores_nothing(pool: PgPool) {
+    let user = create_user(&pool, "an@example.com").await;
+    let f = session_service(&pool);
+
+    // The caller verified a hash that a password reset has replaced since.
+    let res = f.service.start(&user, "hash-before-reset").await;
+
+    assert!(matches!(res, Err(AuthError::InvalidCredentials)), "{res:?}");
+    assert!(stored_hashes(&pool, user.id).await.is_empty());
+}
+
+#[sqlx::test]
 async fn each_start_issues_a_distinct_refresh_token(pool: PgPool) {
     let user = create_user(&pool, "an@example.com").await;
     let f = session_service(&pool);
 
-    let first = f.service.start(&user).await.expect("first session");
-    let second = f.service.start(&user).await.expect("second session");
+    let first = f
+        .service
+        .start(&user, PASSWORD_HASH)
+        .await
+        .expect("first session");
+    let second = f
+        .service
+        .start(&user, PASSWORD_HASH)
+        .await
+        .expect("second session");
 
     assert_ne!(first.refresh_token, second.refresh_token);
     assert_eq!(stored_hashes(&pool, user.id).await.len(), 2);

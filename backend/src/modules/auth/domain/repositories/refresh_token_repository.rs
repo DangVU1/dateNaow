@@ -22,15 +22,29 @@ pub enum RefreshRepoError {
     /// `rotate` found the old token already revoked; nothing was changed.
     #[error("refresh token already revoked")]
     AlreadyRevoked,
+    /// `insert` found the user gone or their password hash no longer equal to
+    /// the one the caller checked; nothing was stored.
+    #[error("user credentials changed")]
+    CredentialsChanged,
     /// Any storage failure. The source is kept for logs, never sent to clients.
     #[error("refresh token storage error")]
     Database(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
+/// Every method that creates, rotates or revokes all tokens of a user first
+/// locks that user's row, so it is ordered against a password change and
+/// against the others: a token is never created alongside a concurrent
+/// "revoke everything" that then misses it (P3, P6).
 pub trait RefreshTokenRepository: Send + Sync + 'static {
+    /// Stores a new token for `user_id`, but only while the user's stored
+    /// password hash still equals `password_hash` (the one just verified at
+    /// sign-in, or just set at sign-up). Fails with `CredentialsChanged`,
+    /// storing nothing, otherwise, e.g. when a password reset committed after
+    /// the password was checked.
     fn insert(
         &self,
         user_id: Uuid,
+        password_hash: &str,
         token_hash: [u8; 32],
         expires_at: DateTime<Utc>,
     ) -> impl Future<Output = Result<RefreshTokenRecord, RefreshRepoError>> + Send;

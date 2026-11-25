@@ -13,6 +13,9 @@ const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_ACCESS_TOKEN_TTL_SECS: i64 = 900;
 /// Shortest accepted `JWT_SECRET`, in bytes (the HS256 key size).
 use crate::modules::auth::application::services::jwt::MIN_SECRET_BYTES as MIN_JWT_SECRET_BYTES;
+/// Marker of the placeholder secrets in `.env.example`; such a secret is
+/// public, so it is refused outside plain-HTTP development.
+const PLACEHOLDER_SECRET_MARKER: &str = "change-me";
 /// Upper bound for the access token lifetime (one day), so `iat + ttl` cannot overflow.
 const MAX_ACCESS_TOKEN_TTL_SECS: i64 = 86_400;
 /// Default refresh-token lifetime: 30 days (P3).
@@ -130,6 +133,20 @@ impl Config {
                 .ok_or_else(|| anyhow!("{key} must be true or false"))
         };
 
+        // `COOKIE_SECURE=false` is only for plain-HTTP development, so any
+        // other configuration must not run with the committed dev secret.
+        let cookie_secure = flag("COOKIE_SECURE", true)?;
+        if cookie_secure
+            && jwt_secret
+                .to_ascii_lowercase()
+                .contains(PLACEHOLDER_SECRET_MARKER)
+        {
+            return Err(anyhow!(
+                "JWT_SECRET is the development placeholder from .env.example; \
+                 set a long random secret (COOKIE_SECURE=false is for local development only)"
+            ));
+        }
+
         let config = Self {
             database_url,
             bind_addr,
@@ -144,7 +161,7 @@ impl Config {
                 "ARGON2_PARALLELISM",
                 argon2::Params::DEFAULT_P_COST,
             )?,
-            cookie_secure: flag("COOKIE_SECURE", true)?,
+            cookie_secure,
             trust_proxy: flag("TRUST_PROXY", false)?,
             smtp_host: optional_text(&lookup, "SMTP_HOST", DEFAULT_SMTP_HOST),
             smtp_port: optional_number(&lookup, "SMTP_PORT", DEFAULT_SMTP_PORT, |n: &u16| *n > 0)
@@ -406,6 +423,35 @@ mod tests {
             ("JWT_SECRET", exact.as_str()),
         ];
         assert!(Config::from_lookup(lookup_from(&pairs)).is_ok());
+    }
+
+    const PLACEHOLDER_SECRET: &str = "dev-only-insecure-jwt-secret-change-me-0123456789";
+
+    #[test]
+    fn placeholder_jwt_secret_is_rejected_when_cookies_are_secure() {
+        for secure in [None, Some("true")] {
+            let mut pairs = minimal_with(&[("JWT_SECRET", PLACEHOLDER_SECRET)]);
+            if let Some(value) = secure {
+                pairs.push(("COOKIE_SECURE", value));
+            }
+            let err = Config::from_lookup(lookup_from(&pairs)).unwrap_err();
+            assert!(err.to_string().contains("JWT_SECRET"), "{err}");
+            assert!(
+                !err.to_string().contains(PLACEHOLDER_SECRET),
+                "error must not echo the secret"
+            );
+        }
+    }
+
+    #[test]
+    fn placeholder_jwt_secret_is_allowed_for_plain_http_development() {
+        let config = Config::from_lookup(lookup_from(&minimal_with(&[
+            ("JWT_SECRET", PLACEHOLDER_SECRET),
+            ("COOKIE_SECURE", "false"),
+        ])))
+        .unwrap();
+        assert!(!config.cookie_secure);
+        assert_eq!(config.jwt_secret, PLACEHOLDER_SECRET);
     }
 
     #[test]

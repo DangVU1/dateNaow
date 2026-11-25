@@ -115,6 +115,10 @@ impl PasswordResetRepository for PgPasswordResetRepository {
             return Ok(false);
         }
 
+        // The user row is updated before the tokens are revoked: this lock
+        // waits for running rotations and sign-ins of the user (they hold
+        // `FOR SHARE` on it), so the revocation below sees their new tokens,
+        // and those that come later find the new hash or a revoked token.
         PgUserRepository::set_password_hash_in_tx(&mut tx, user_id, new_hash)
             .await
             .map_err(|e| PasswordResetRepoError::Database(Box::new(e)))?;
