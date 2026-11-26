@@ -701,6 +701,59 @@ async fn logout_with_unknown_or_malformed_cookie_returns_204(pool: PgPool) {
     assert_invalid_and_cleared(&refresh(&app, &cookie).await);
 }
 
+#[sqlx::test]
+async fn logout_storage_error_returns_500_and_still_clears_cookie(pool: PgPool) {
+    // #17: a revocation that fails must not be reported as a sign-out. The
+    // failure is simulated with a trigger that rejects every UPDATE of
+    // `refresh_tokens`, so the lookup works and the revocation fails.
+    let (app, cookie) = signed_up(pool.clone()).await;
+    sqlx::raw_sql(
+        r#"CREATE FUNCTION reject_update() RETURNS trigger LANGUAGE plpgsql AS
+           $$ BEGIN RAISE EXCEPTION 'simulated storage failure'; END $$;
+           CREATE TRIGGER reject_update BEFORE UPDATE ON refresh_tokens
+           FOR EACH ROW EXECUTE FUNCTION reject_update();"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("install failing trigger");
+
+    let res = app.post(LOGOUT).cookie(&cookie).send().await;
+
+    assert_eq!(
+        res.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        res.text
+    );
+    assert_eq!(res.body["error"]["code"], "internal_error");
+    assert!(res.body["error"]["message"].is_string());
+    assert!(!res.text.contains("simulated"), "{}", res.text);
+    assert_eq!(res.headers["cache-control"], "no-store");
+    let c = res
+        .set_cookie("dn_refresh")
+        .expect("500 still clears cookie");
+    assert!(
+        c.starts_with("dn_refresh=;") && c.contains("Max-Age=0") && c.contains("Path=/api/v1/auth"),
+        "{c}"
+    );
+
+    // The 500 was truthful: the token was not revoked.
+    sqlx::raw_sql("DROP TRIGGER reject_update ON refresh_tokens")
+        .execute(&pool)
+        .await
+        .expect("drop trigger");
+    assert_eq!(refresh(&app, &cookie).await.status, StatusCode::OK);
+}
+
+#[sqlx::test(migrations = false)]
+async fn openapi_documents_the_logout_500(pool: PgPool) {
+    let res = TestApp::new(pool).get("/api/v1/openapi.json").send().await;
+
+    let responses = &res.body["paths"][LOGOUT]["post"]["responses"];
+    assert!(responses["204"].is_object(), "{}", res.text);
+    assert!(responses["500"].is_object(), "{}", res.text);
+}
+
 #[sqlx::test(migrations = false)]
 async fn openapi_lists_refresh_and_logout(pool: PgPool) {
     let res = TestApp::new(pool).get("/api/v1/openapi.json").send().await;

@@ -31,14 +31,20 @@ const SECS_PER_DAY: i64 = 86_400;
         (status = 201, description = "Account created and signed in; sets the `dn_refresh` cookie", body = AuthResponse),
         (status = 400, description = "Malformed JSON or unknown field", body = ErrorResponse),
         (status = 409, description = "`email_taken`", body = ErrorResponse),
-        (status = 422, description = "Invalid email or password; see `fields`. Password codes: `too_short`, `too_long`, `too_common`", body = ErrorResponse),
+        (status = 422, description = "Invalid email or password; see `fields`. Password codes: `too_short`, `too_long`, `too_common`. Not counted by the sign-up limit", body = ErrorResponse),
+        (status = 429, description = "`rate_limited` (10 sign-up attempts per IP address, IPv6 per /64, in an hour; successful ones count too), with `Retry-After` in seconds", body = ErrorResponse),
     )
 )]
 pub async fn register(
     State(state): State<AppState>,
+    ClientIp(client_ip): ClientIp,
     ValidatedJson(body): ValidatedJson<RegisterRequest>,
 ) -> Result<(StatusCode, CookieJar, Json<AuthResponse>), ApiError> {
-    let (user, session) = state.auth.register.execute(body.into()).await?;
+    let (user, session) = state
+        .auth
+        .register
+        .execute(body.into_command(client_ip))
+        .await?;
     let (jar, response) = signed_in(&state, &user, &session);
     Ok((StatusCode::CREATED, jar, response))
 }
@@ -112,18 +118,22 @@ fn refresh_failed(error: AuthError, secure: bool) -> Response {
     ),
     responses(
         (status = 204, description = "Signed out; clears the `dn_refresh` cookie"),
+        (status = 500, description = "`internal_error`: the refresh token could not be revoked, so the session may still be live. The `dn_refresh` cookie is cleared anyway", body = ErrorResponse),
     )
 )]
 pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
+    // The browser drops the cookie whatever happens below (#17).
     let clear = CookieJar::new().add(clear_refresh_cookie(state.config.cookie_secure));
-    if let Some(cookie) = jar.get(REFRESH_COOKIE)
-        && let Err(error) = state.auth.sessions.end(cookie.value()).await
-    {
-        // Plan: logout always answers 204. The browser drops the cookie
-        // either way; the failure is kept in the server log.
-        tracing::error!(error = %error, "logout could not revoke the refresh token");
+    let result = match jar.get(REFRESH_COOKIE) {
+        Some(cookie) => state.auth.sessions.end(cookie.value()).await,
+        None => Ok(()),
+    };
+    match result {
+        Ok(()) => (StatusCode::NO_CONTENT, clear).into_response(),
+        // A 500 tells the user truthfully that the session may still be
+        // live; `ApiError` logs the cause.
+        Err(error) => (clear, ApiError::from(error)).into_response(),
     }
-    (StatusCode::NO_CONTENT, clear).into_response()
 }
 
 /// The refresh cookie plus the JSON body for a freshly started session.

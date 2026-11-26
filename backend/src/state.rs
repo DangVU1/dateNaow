@@ -25,7 +25,8 @@ use crate::modules::users::infrastructure::PgUserRepository;
 use crate::shared::clock::Clock;
 
 pub type Sessions = SessionService<PgUserRepository, PgRefreshTokenRepository>;
-pub type Register = RegisterHandler<PgUserRepository, PgRefreshTokenRepository>;
+pub type Register =
+    RegisterHandler<PgUserRepository, PgRefreshTokenRepository, PgAttemptRepository>;
 pub type Login = LoginHandler<PgUserRepository, PgRefreshTokenRepository, PgAttemptRepository>;
 pub type RequestReset =
     RequestPasswordResetHandler<PgUserRepository, PgPasswordResetRepository, PgAttemptRepository>;
@@ -89,12 +90,13 @@ impl AppState {
             clock.clone(),
             chrono::Duration::days(config.refresh_token_ttl_days),
         ));
+        let limiter = || AttemptLimiter::new(PgAttemptRepository::new(db.clone()), clock.clone());
         let register = Arc::new(RegisterHandler::new(
             users_repo.clone(),
             hasher.clone(),
+            limiter(),
             sessions.clone(),
         ));
-        let limiter = || AttemptLimiter::new(PgAttemptRepository::new(db.clone()), clock.clone());
         let login = Arc::new(LoginHandler::new(
             users_repo.clone(),
             hasher.clone(),

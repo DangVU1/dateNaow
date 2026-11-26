@@ -1,8 +1,9 @@
-//! Failed-attempt limits for sign-in and password-reset requests (P5, as
-//! amended by DECISIONS #13).
+//! Attempt limits for sign-in, password-reset requests (P5, as amended by
+//! DECISIONS #13) and sign-up (#17).
 //!
-//! Each action has three counters: one per (email, IP) pair, one per IP and
-//! one global counter per email. They are acquired in **tiers**: the local
+//! Sign-up has a single counter per IP. Sign-in and reset requests have three
+//! counters: one per (email, IP) pair, one per IP and one global counter per
+//! email. They are acquired in **tiers**: the local
 //! tier (pair + IP) first, and the global tier (email) only if the local tier
 //! let the attempt through. An attempt blocked locally therefore never reaches
 //! the email's global counter, so one IP (IPv6: one /64) can add at most
@@ -44,6 +45,8 @@ pub struct LimitPolicy {
 pub const LOGIN_ACTION: &str = "login";
 /// Action prefix of the password-reset request counter keys.
 pub const RESET_ACTION: &str = "reset";
+/// Action prefix of the sign-up counter keys (`register:ip:...`).
+pub const REGISTER_ACTION: &str = "register";
 
 /// Sign-in: 5 attempts per (email, IP) pair in 15 minutes.
 pub const LOGIN_PER_PAIR: LimitPolicy = LimitPolicy {
@@ -74,6 +77,14 @@ pub const RESET_PER_IP: LimitPolicy = LimitPolicy {
 /// Password-reset requests: 10 per email from all IPs together in an hour.
 /// Bounds the reset emails one inbox can receive.
 pub const RESET_PER_EMAIL: LimitPolicy = LimitPolicy {
+    max: 10,
+    window: Duration::minutes(60),
+};
+
+/// Sign-up: 10 attempts per IP address (IPv6: per /64) in an hour (#17).
+/// Successful sign-ups count too, so the limit also bounds how many accounts
+/// one address can create.
+pub const REGISTER_PER_IP: LimitPolicy = LimitPolicy {
     max: 10,
     window: Duration::minutes(60),
 };
@@ -373,6 +384,20 @@ mod tests {
     }
 
     #[test]
+    fn register_key_is_per_ip_scope_and_apart_from_other_actions() {
+        let key = LimitKey::ip(REGISTER_ACTION, ip("2001:db8:1:2::9"), REGISTER_PER_IP);
+        assert_eq!(key.label, "register:ip:2001:db8:1:2::/64");
+        let addr = ip("203.0.113.7");
+        let register = LimitKey::ip(REGISTER_ACTION, addr, REGISTER_PER_IP);
+        for other in [
+            LimitKey::ip(LOGIN_ACTION, addr, LOGIN_PER_IP),
+            LimitKey::ip(RESET_ACTION, addr, RESET_PER_IP),
+        ] {
+            assert_ne!(register.hash(), other.hash(), "{}", other.label);
+        }
+    }
+
+    #[test]
     fn ipv4_mapped_ipv6_counts_as_ipv4() {
         // A dual-stack listener reports IPv4 clients as ::ffff:a.b.c.d; without
         // canonicalising, every IPv4 client would share one /64.
@@ -406,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn policies_match_decision_13_and_fit_the_prune_window() {
+    fn policies_match_decisions_13_and_17_and_fit_the_prune_window() {
         let minutes = |p: LimitPolicy| (p.max, p.window.num_minutes());
         assert_eq!(minutes(LOGIN_PER_PAIR), (5, 15));
         assert_eq!(minutes(LOGIN_PER_IP), (20, 15));
@@ -414,6 +439,7 @@ mod tests {
         assert_eq!(minutes(RESET_PER_PAIR), (3, 60));
         assert_eq!(minutes(RESET_PER_IP), (10, 60));
         assert_eq!(minutes(RESET_PER_EMAIL), (10, 60));
+        assert_eq!(minutes(REGISTER_PER_IP), (10, 60));
         for policy in [
             LOGIN_PER_PAIR,
             LOGIN_PER_IP,
@@ -421,6 +447,7 @@ mod tests {
             RESET_PER_PAIR,
             RESET_PER_IP,
             RESET_PER_EMAIL,
+            REGISTER_PER_IP,
         ] {
             assert!(policy.window <= PRUNE_AFTER);
         }

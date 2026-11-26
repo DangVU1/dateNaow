@@ -33,7 +33,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .merge(users::presentation::routes().layer(middleware::map_response(no_store)))
         // Unknown paths under /api/v1 answer with the JSON envelope.
-        .fallback(|| async { ApiError::NotFound });
+        .fallback(|| async { ApiError::NotFound })
+        // So does a known path with the wrong method (#17); axum keeps the
+        // `Allow` header. Applies only to routes added above, so it stays last.
+        .method_not_allowed_fallback(|| async { ApiError::MethodNotAllowed });
 
     with_middleware(Router::new().nest("/api/v1", api), state)
 }

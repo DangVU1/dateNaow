@@ -7,7 +7,7 @@ use crate::modules::auth::application::services::attempt_limiter::{
     AttemptLimiter, LOGIN_ACTION, LOGIN_PER_EMAIL, LOGIN_PER_PAIR, LimitKey,
 };
 use crate::modules::auth::domain::{
-    AttemptRepository, OpaqueToken, PasswordResetRepository, PlainPassword,
+    AttemptRepository, NewPassword, OpaqueToken, PasswordResetRepository,
 };
 use crate::modules::users::domain::UserRepository;
 use crate::shared::clock::Clock;
@@ -54,7 +54,7 @@ where
     pub async fn execute(&self, cmd: ConfirmPasswordResetCommand) -> Result<(), AuthError> {
         // 1. The password first, so a typo or a common password (#16) does
         //    not burn the token.
-        let password = PlainPassword::parse_new(cmd.new_password).map_err(|e| {
+        let password = NewPassword::parse(cmd.new_password).map_err(|e| {
             let mut fields = FieldErrors::new();
             fields.insert("new_password".to_owned(), vec![e.code().to_owned()]);
             AuthError::Validation(fields)

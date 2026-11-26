@@ -24,6 +24,18 @@ export function errorMessage(err: ApiError): string {
   }
 }
 
+/**
+ * Shown on the sign-in page after the backend answered sign-out with a 500
+ * (DECISIONS #17): signed out here, but the session may still be live. A
+ * password reset revokes every session.
+ */
+export const SIGN_OUT_NOT_CONFIRMED_MESSAGE =
+  "Bạn đã đăng xuất trên máy này, nhưng máy chủ chưa xác nhận. Nếu lo ngại, bạn dùng 'Quên mật khẩu?' để đặt lại mật khẩu và đăng xuất khỏi mọi nơi nhé.";
+
+/** Shown next to the sign-out button when the request got no backend answer. */
+export const SIGN_OUT_NOT_REACHED_MESSAGE =
+  'Chưa đăng xuất được vì không kết nối được máy chủ. Bạn thử đăng xuất lại nhé.';
+
 /** Like `errorMessage`, for anything a submit handler may catch. */
 export function anyErrorMessage(err: unknown): string {
   return err instanceof ApiError ? errorMessage(err) : GENERIC_MESSAGE;

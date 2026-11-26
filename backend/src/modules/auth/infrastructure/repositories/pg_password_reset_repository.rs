@@ -49,25 +49,48 @@ impl PasswordResetRepository for PgPasswordResetRepository {
         expires_at: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> Result<(), PasswordResetRepoError> {
-        // One statement, so one round trip and atomic without an explicit
-        // transaction: the reset request stays cheap and its response time
-        // barely depends on whether the account exists (P6).
+        let mut tx = self.pool.begin().await.map_err(database)?;
+
+        // Lock order for every transaction that writes a user's tokens: the
+        // user row first, then `password_reset_tokens`, then `refresh_tokens`
+        // (`consume_and_set_password`, `rotate`, `revoke_all_for_user`). Any
+        // other order can deadlock with this one.
+        //
+        // Concurrent requests for one user then run one after the other, and
+        // the UPDATE below (a new statement, hence a new READ COMMITTED
+        // snapshot) sees the token a previous request inserted, so exactly
+        // one link stays live (#17). A single statement could not do this:
+        // its snapshot would predate the wait.
         sqlx::query!(
-            r#"WITH invalidated AS (
-                   UPDATE password_reset_tokens SET used_at = $4
-                   WHERE user_id = $1 AND used_at IS NULL
-               )
-               INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+            "SELECT 1 AS locked FROM users WHERE id = $1 FOR NO KEY UPDATE",
+            user_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database)?;
+
+        sqlx::query!(
+            r#"UPDATE password_reset_tokens SET used_at = $2
+               WHERE user_id = $1 AND used_at IS NULL"#,
+            user_id,
+            now,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(database)?;
+
+        sqlx::query!(
+            r#"INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
                VALUES ($1, $2, $3)"#,
             user_id,
             &token_hash[..],
             expires_at,
-            now,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(database)?;
 
+        tx.commit().await.map_err(database)?;
         Ok(())
     }
 
@@ -97,6 +120,23 @@ impl PasswordResetRepository for PgPasswordResetRepository {
     ) -> Result<bool, PasswordResetRepoError> {
         let mut tx = self.pool.begin().await.map_err(database)?;
 
+        // The user row first (see `replace_for_user` for the lock order).
+        // Taking the token row first deadlocked with a concurrent request for
+        // a new link: that request holds the user row and waits for this
+        // token row, while this transaction waited for the user row. The
+        // caller found `token_id` and `user_id` together by the token hash,
+        // and the UPDATE below re-checks that they still belong together
+        // after the wait, so locking by `user_id` before touching the token
+        // is safe; a request that replaced the token meanwhile has set
+        // `used_at`, and the UPDATE then changes nothing.
+        sqlx::query!(
+            "SELECT 1 AS locked FROM users WHERE id = $1 FOR NO KEY UPDATE",
+            user_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database)?;
+
         // The `used_at IS NULL` condition makes the row lock decide a race:
         // of two concurrent confirmations of one token, only one updates it.
         let consumed = sqlx::query!(
@@ -115,10 +155,11 @@ impl PasswordResetRepository for PgPasswordResetRepository {
             return Ok(false);
         }
 
-        // The user row is updated before the tokens are revoked: this lock
-        // waits for running rotations and sign-ins of the user (they hold
-        // `FOR SHARE` on it), so the revocation below sees their new tokens,
-        // and those that come later find the new hash or a revoked token.
+        // The user row is updated before the tokens are revoked. Its lock,
+        // taken above, waited for running rotations and sign-ins of the user
+        // (they hold `FOR SHARE` on it), so the revocation below sees their
+        // new tokens, and those that come later find the new hash or a
+        // revoked token.
         PgUserRepository::set_password_hash_in_tx(&mut tx, user_id, new_hash)
             .await
             .map_err(|e| PasswordResetRepoError::Database(Box::new(e)))?;
