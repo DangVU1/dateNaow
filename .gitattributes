@@ -1,0 +1,11 @@
+# Normalise line endings in the repository; shell and Docker files must stay LF
+# so they run inside Linux containers even when checked out on Windows.
+* text=auto
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+docker-compose*.yml text eol=lf
+.env.example text eol=lf
+*.sql text eol=lf
+# Embedded with include_str!: keep these byte-for-byte (LF) on every checkout.
+backend/src/modules/auth/domain/value_objects/common_passwords/* text eol=lf

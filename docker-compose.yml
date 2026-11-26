@@ -1,0 +1,49 @@
+# Local development environment: backend, PostgreSQL and Mailpit.
+# `docker compose up --build -d` starts all three; the backend listens on
+# http://127.0.0.1:8080. It reads backend/.env (copy backend/.env.example) and
+# overrides the hosts below, since .env points at 127.0.0.1 for `cargo run`.
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file: backend/.env
+    environment:
+      DATABASE_URL: postgres://datenaow:datenaow@postgres:5432/datenaow
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      BIND_ADDR: 0.0.0.0:8080
+      # Local HTTP only; a TLS deployment keeps the default (true).
+      COOKIE_SECURE: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18.7
+    environment:
+      POSTGRES_USER: datenaow
+      POSTGRES_PASSWORD: datenaow
+      POSTGRES_DB: datenaow
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # PostgreSQL 18 images keep data under /var/lib/postgresql/<major>/,
+      # so the volume is mounted on the parent directory.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datenaow -d datenaow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:v1.34.0
+    ports:
+      - "127.0.0.1:1025:1025" # SMTP
+      - "127.0.0.1:8025:8025" # web UI
+
+volumes:
+  postgres-data:

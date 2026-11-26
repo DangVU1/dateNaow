@@ -1,0 +1,44 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding-top: 24px;
+}
+
+.title {
+  font-size: 1.75rem;
+  line-height: 1.2;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.lead {
+  color: var(--color-text-muted);
+}
+
+/* Outcome of a request (success or a dead link), shown instead of the form. */
+.notice {
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: center;
+}
+
+/* Inline links still get a 44px+ tap area. */
+.links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap-size);
+  padding: 0 4px;
+}

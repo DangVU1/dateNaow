@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) AS \"count!\" FROM auth_attempts\n               WHERE key_hash = $1 AND attempted_at > $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "846fbaffd74b7678c24549fdbe2358596df6018e4d92b7f92f8e90251cf68b45"
+}

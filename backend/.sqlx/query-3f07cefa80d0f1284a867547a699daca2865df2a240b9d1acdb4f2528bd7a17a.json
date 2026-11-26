@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM auth_attempts WHERE key_hash = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3f07cefa80d0f1284a867547a699daca2865df2a240b9d1acdb4f2528bd7a17a"
+}

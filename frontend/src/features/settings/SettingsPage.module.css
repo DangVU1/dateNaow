@@ -1,0 +1,75 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding-top: 24px;
+}
+
+.title {
+  font-size: 1.75rem;
+  line-height: 1.2;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.note {
+  color: var(--color-text-muted);
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The whole row is the tap target, at least 44px tall. */
+.option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--tap-size);
+  padding: 0 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.option:has(input:checked) {
+  border-color: var(--color-primary);
+}
+
+.option input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--color-primary);
+}
+
+.group:disabled .option {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap-size);
+  font-weight: 600;
+}

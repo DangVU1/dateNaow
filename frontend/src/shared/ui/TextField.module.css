@@ -1,0 +1,30 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  font-weight: 600;
+}
+
+.input {
+  width: 100%;
+  min-height: var(--tap-size);
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  /* 16px or more keeps iOS Safari from zooming in on focus. */
+  font-size: 1rem;
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--color-danger);
+}
+
+.error {
+  color: var(--color-danger);
+  font-size: 0.9375rem;
+}
