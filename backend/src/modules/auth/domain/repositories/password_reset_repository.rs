@@ -23,7 +23,9 @@ pub enum PasswordResetRepoError {
 
 pub trait PasswordResetRepository: Send + Sync + 'static {
     /// Atomically marks every unused token of `user_id` as used at `now` and
-    /// stores the new one, so only the latest link works.
+    /// stores the new one, so only the latest link works. Concurrent calls
+    /// for one user are serialised: afterwards exactly one of their tokens is
+    /// unused.
     fn replace_for_user(
         &self,
         user_id: Uuid,

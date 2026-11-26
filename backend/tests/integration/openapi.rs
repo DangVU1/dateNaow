@@ -53,3 +53,17 @@ async fn openapi_lists_all_plan_1_paths(pool: PgPool) {
         );
     }
 }
+
+#[sqlx::test(migrations = false)]
+async fn openapi_documents_the_sign_up_limit(pool: PgPool) {
+    // #17: sign-up answers 429 past 10 attempts per IP in an hour.
+    let res = TestApp::new(pool).get("/api/v1/openapi.json").send().await;
+    let responses = &res.body["paths"]["/api/v1/auth/register"]["post"]["responses"];
+    for status in ["201", "409", "422", "429"] {
+        assert!(
+            responses[status].is_object(),
+            "missing {status}: {}",
+            res.text
+        );
+    }
+}

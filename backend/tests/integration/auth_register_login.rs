@@ -1,6 +1,7 @@
 //! `POST /api/v1/auth/register` and `POST /api/v1/auth/login`, including the
 //! failed-attempt limits (P5 as amended by DECISIONS #13: 5 per (email, IP)
-//! pair, 20 per IP and 50 per email in 15 minutes).
+//! pair, 20 per IP and 50 per email in 15 minutes), the sign-up limit (#17:
+//! 10 per IP in an hour) and NFC passwords (#17).
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -10,9 +11,6 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tokio::task::JoinSet;
-
-use datenaow::modules::auth::application::services::PasswordHashService;
-use datenaow::modules::auth::domain::PlainPassword;
 
 use crate::common::{TestApp, TestResponse};
 
@@ -58,6 +56,158 @@ async fn registered(pool: PgPool) -> TestApp {
 }
 
 // ---- register ----
+
+async fn register_from(app: &TestApp, peer: IpAddr, email: &str, password: &str) -> TestResponse {
+    app.post("/api/v1/auth/register")
+        .peer(SocketAddr::new(peer, 40000))
+        .json(&json!({ "email": email, "password": password }))
+        .send()
+        .await
+}
+
+async fn user_count(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(pool)
+        .await
+        .expect("count users")
+}
+
+#[sqlx::test]
+async fn eleventh_sign_up_from_one_ip_in_an_hour_returns_429(pool: PgPool) {
+    let app = TestApp::new(pool.clone());
+    for n in 0..10 {
+        let res = register_from(&app, client(1), &format!("u{n}@example.com"), PASSWORD).await;
+        assert_eq!(res.status, StatusCode::CREATED, "#{n}: {}", res.text);
+    }
+
+    let res = register_from(&app, client(1), "u10@example.com", PASSWORD).await;
+
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS, "{}", res.text);
+    assert_eq!(res.body["error"]["code"], "rate_limited");
+    assert_eq!(res.headers["retry-after"], "3600");
+    assert!(res.set_cookie("dn_refresh").is_none());
+    assert_eq!(user_count(&pool).await, 10, "no account past the limit");
+    // Successful sign-ups are not forgiven: every attempt is still counted,
+    // under a hashed key.
+    assert_eq!(rows_for(&pool, "register:ip:198.51.100.1").await, 11);
+
+    // Another address is not affected.
+    let res = register_from(&app, client(2), "u10@example.com", PASSWORD).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+}
+
+#[sqlx::test]
+async fn sign_up_limit_lifts_after_an_hour(pool: PgPool) {
+    let app = TestApp::new(pool);
+    for n in 0..10 {
+        let res = register_from(&app, client(1), &format!("u{n}@example.com"), PASSWORD).await;
+        assert_eq!(res.status, StatusCode::CREATED, "#{n}: {}", res.text);
+    }
+    let blocked = register_from(&app, client(1), "late@example.com", PASSWORD).await;
+    assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
+
+    app.clock
+        .advance(Duration::minutes(60) + Duration::seconds(1));
+    let res = register_from(&app, client(1), "late@example.com", PASSWORD).await;
+
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+}
+
+#[sqlx::test]
+async fn sign_up_limit_is_per_ipv6_64(pool: PgPool) {
+    let app = TestApp::new(pool);
+    for n in 0..10u16 {
+        let peer = IpAddr::from([0x2001, 0xdb8, 1, 2, 0, 0, 0, n + 1]);
+        let res = register_from(&app, peer, &format!("u{n}@example.com"), PASSWORD).await;
+        assert_eq!(res.status, StatusCode::CREATED, "#{n}: {}", res.text);
+    }
+    let same_64 = IpAddr::from([0x2001, 0xdb8, 1, 2, 0xffff, 0, 0, 1]);
+    let res = register_from(&app, same_64, "u10@example.com", PASSWORD).await;
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS, "{}", res.text);
+
+    let other_64 = IpAddr::from([0x2001, 0xdb8, 1, 3, 0, 0, 0, 1]);
+    let res = register_from(&app, other_64, "u10@example.com", PASSWORD).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+}
+
+#[sqlx::test]
+async fn invalid_sign_ups_are_not_counted(pool: PgPool) {
+    let app = TestApp::new(pool.clone());
+    for _ in 0..15 {
+        let res = register_from(&app, client(1), "not-an-email", "short").await;
+        assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.text);
+        let res = register_from(&app, client(1), "an@example.com", "password").await;
+        assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.text);
+    }
+    assert_eq!(rows_for(&pool, "register:ip:198.51.100.1").await, 0);
+
+    let res = register_from(&app, client(1), EMAIL, PASSWORD).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+}
+
+#[sqlx::test]
+async fn duplicate_email_sign_ups_are_counted_and_limited_before_email_taken(pool: PgPool) {
+    let app = TestApp::new(pool);
+    let res = register_from(&app, client(1), EMAIL, PASSWORD).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+    for _ in 0..9 {
+        let res = register_from(&app, client(1), EMAIL, PASSWORD).await;
+        assert_eq!(res.status, StatusCode::CONFLICT, "{}", res.text);
+    }
+
+    // Past the limit the answer no longer says whether the email is taken.
+    let res = register_from(&app, client(1), EMAIL, PASSWORD).await;
+
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS, "{}", res.text);
+    assert_eq!(res.body["error"]["code"], "rate_limited");
+}
+
+#[sqlx::test]
+async fn sign_up_limit_is_separate_from_login_limits(pool: PgPool) {
+    let app = registered(pool).await;
+    for _ in 0..20 {
+        login(&app, "nobody@example.com", WRONG).await;
+    }
+    // The IP is now over the login limit but can still sign up.
+    let res = app.register("bo@example.com", PASSWORD).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+}
+
+// ---- NFC passwords (#17) ----
+
+/// "mật khẩu đẹp lắm" with precomposed letters and with combining marks.
+const VI_NFC: &str = "m\u{1EAD}t kh\u{1EA9}u \u{0111}\u{1EB9}p l\u{1EAF}m";
+const VI_NFD: &str =
+    "ma\u{0323}\u{0302}t kha\u{0302}\u{0309}u \u{0111}e\u{0323}p la\u{0306}\u{0301}m";
+
+#[sqlx::test]
+async fn password_set_in_one_unicode_form_signs_in_with_the_other(pool: PgPool) {
+    assert_ne!(VI_NFC, VI_NFD);
+    let app = TestApp::new(pool);
+    for (email, set, typed) in [
+        ("nfc@example.com", VI_NFC, VI_NFD),
+        ("nfd@example.com", VI_NFD, VI_NFC),
+    ] {
+        let res = app.register(email, set).await;
+        assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+
+        let res = login(&app, email, typed).await;
+        assert_eq!(res.status, StatusCode::OK, "{email}: {}", res.text);
+        let res = login(&app, email, set).await;
+        assert_eq!(res.status, StatusCode::OK, "{email}: {}", res.text);
+    }
+}
+
+#[sqlx::test]
+async fn password_length_counts_nfc_characters(pool: PgPool) {
+    let app = TestApp::new(pool);
+    // 128 characters in NFC, 384 in NFD: accepted.
+    let long = "a\u{0323}\u{0302}".repeat(128);
+    let res = app.register(EMAIL, &long).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+    let res = login(&app, EMAIL, &"\u{1EAD}".repeat(128)).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+}
 
 #[sqlx::test]
 async fn register_returns_201_with_token_and_refresh_cookie(pool: PgPool) {
@@ -237,15 +387,20 @@ async fn login_with_correct_password_returns_200_and_cookie(pool: PgPool) {
 }
 
 /// Gives `EMAIL`'s account the password `raw` directly in the database, the
-/// way an account created before DECISIONS #16 could have it.
+/// way an account created before DECISIONS #16 could have it. Hashed with
+/// the argon2 crate itself: `PasswordHashService::hash` only takes a
+/// `NewPassword`, which a common password can never become (#17). `raw` must
+/// already be NFC.
 async fn set_password_directly(pool: &PgPool, raw: &str) {
+    use argon2::password_hash::PasswordHasher;
+
     let params = crate::common::test_config()
         .argon2_params()
         .expect("valid test params");
-    let hash = PasswordHashService::new(params)
-        .hash(&PlainPassword::parse(raw.to_owned()).expect("valid length"))
-        .await
-        .expect("hash password");
+    let hash = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+        .hash_password(raw.as_bytes())
+        .expect("hash password")
+        .to_string();
     let updated = sqlx::query("UPDATE users SET password_hash = $1 WHERE email = $2")
         .bind(hash)
         .bind(EMAIL)
@@ -504,9 +659,11 @@ async fn attempts_table_stores_only_32_byte_hashes(pool: PgPool) {
         .await
         .expect("query auth_attempts");
 
-    // Two failed logins, each counted once per pair, per IP and per email.
-    assert_eq!(lengths.len(), 6);
+    // The sign-up (once per IP, #17) and two failed logins, each counted
+    // once per pair, per IP and per email.
+    assert_eq!(lengths.len(), 7);
     assert!(lengths.iter().all(|len| *len == 32), "{lengths:?}");
+    assert_eq!(rows_for(&pool, "register:ip:203.0.113.7").await, 1);
 }
 
 #[sqlx::test]
@@ -643,4 +800,34 @@ async fn forwarded_for_is_used_when_trust_proxy_is_true(pool: PgPool) {
 
     assert_eq!(other_client.status, StatusCode::UNAUTHORIZED);
     assert_eq!(same_client.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[sqlx::test]
+async fn forged_entries_left_of_an_invalid_rightmost_are_never_used(pool: PgPool) {
+    // #17: with an unusable rightmost entry the socket address counts, so
+    // rotating the entries to its left does not spread the attempts out.
+    let config = datenaow::config::Config {
+        trust_proxy: true,
+        ..crate::common::test_config()
+    };
+    let app = TestApp::with_config(pool, config);
+    for i in 0..20 {
+        let res = app
+            .post("/api/v1/auth/login")
+            .header("x-forwarded-for", &format!("198.51.100.{i}, garbage"))
+            .json(&json!({ "email": format!("guess{i}@example.com"), "password": WRONG }))
+            .send()
+            .await;
+        assert_eq!(res.status, StatusCode::UNAUTHORIZED, "attempt {i}");
+    }
+
+    // The 21st attempt from the same socket address is over its IP limit.
+    let res = app
+        .post("/api/v1/auth/login")
+        .header("x-forwarded-for", "198.51.100.99, ")
+        .json(&json!({ "email": "fresh@example.com", "password": WRONG }))
+        .send()
+        .await;
+
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS, "{}", res.text);
 }

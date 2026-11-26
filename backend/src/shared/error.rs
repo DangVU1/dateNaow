@@ -38,6 +38,10 @@ pub enum ApiError {
     /// HTTP 404.
     #[error("not found")]
     NotFound,
+    /// HTTP 405: the path exists but not with this method. Axum adds the
+    /// `Allow` header.
+    #[error("method not allowed")]
+    MethodNotAllowed,
     /// HTTP 409: the code names the conflict, e.g. `"email_taken"`.
     #[error("conflict: {0}")]
     Conflict(&'static str),
@@ -80,6 +84,7 @@ impl ApiError {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
+            Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Timeout => StatusCode::REQUEST_TIMEOUT,
@@ -94,6 +99,7 @@ impl ApiError {
             Self::Validation(_) => "validation_error",
             Self::Forbidden => "forbidden",
             Self::NotFound => "not_found",
+            Self::MethodNotAllowed => "method_not_allowed",
             Self::PayloadTooLarge => "payload_too_large",
             Self::Timeout => "request_timeout",
             Self::RateLimited { .. } => "rate_limited",
@@ -108,6 +114,7 @@ impl ApiError {
             Self::Unauthorized(_) => "Bạn cần đăng nhập lại.",
             Self::Forbidden => "Bạn không có quyền làm việc này.",
             Self::NotFound => "Không tìm thấy nội dung này.",
+            Self::MethodNotAllowed => "Yêu cầu này không được hỗ trợ.",
             Self::Conflict(_) => "Dữ liệu bị trùng hoặc xung đột.",
             Self::PayloadTooLarge => "Dữ liệu gửi lên quá lớn.",
             Self::Timeout => "Máy chủ phản hồi quá lâu, bạn thử lại nhé.",
@@ -283,6 +290,7 @@ mod tests {
             (ApiError::BadRequest("invalid_json"), 400, "invalid_json"),
             (ApiError::Forbidden, 403, "forbidden"),
             (ApiError::NotFound, 404, "not_found"),
+            (ApiError::MethodNotAllowed, 405, "method_not_allowed"),
             (ApiError::Conflict("email_taken"), 409, "email_taken"),
             (ApiError::PayloadTooLarge, 413, "payload_too_large"),
             (ApiError::Timeout, 408, "request_timeout"),

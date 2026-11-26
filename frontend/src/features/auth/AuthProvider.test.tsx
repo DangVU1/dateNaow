@@ -9,7 +9,7 @@ import { authResponse } from '../../test/fixtures';
 import { currentLocation, renderApp } from '../../test/renderApp';
 import { AppProviders } from '../../app/providers';
 import { login, logout } from './api';
-import { useAuth } from './useAuth';
+import { useAuth, type SignOutResult } from './useAuth';
 
 vi.mock('./api', () => ({
   login: vi.fn(),
@@ -153,8 +153,15 @@ test('signOut waits for an in-flight refresh so no token survives it', async () 
   expect(getAccessToken()).toBeNull();
 });
 
-test('signOut still clears the session when the logout request fails', async () => {
-  vi.mocked(logout).mockRejectedValue(new ApiError(0, 'network_error'));
+const SIGN_OUT_NOT_CONFIRMED =
+  "Bạn đã đăng xuất trên máy này, nhưng máy chủ chưa xác nhận. Nếu lo ngại, bạn dùng 'Quên mật khẩu?' để đặt lại mật khẩu và đăng xuất khỏi mọi nơi nhé.";
+const SIGN_OUT_NOT_REACHED =
+  'Chưa đăng xuất được vì không kết nối được máy chủ. Bạn thử đăng xuất lại nhé.';
+
+test('signOut after a backend 500 clears the session and says the server did not confirm', async () => {
+  // DECISIONS #17: the server could not revoke the refresh token, but its
+  // 500 response cleared the cookie.
+  vi.mocked(logout).mockRejectedValue(new ApiError(500, 'internal_error'));
   fetchMock.mockResolvedValueOnce(
     jsonResponse(200, authResponse('an@example.com', 'tok-a')),
   );
@@ -167,6 +174,85 @@ test('signOut still clears the session when the logout request fails', async () 
     await screen.findByRole('heading', { name: 'Đăng nhập' }),
   ).toBeInTheDocument();
   expect(getAccessToken()).toBeNull();
+  expect(screen.getByRole('alert')).toHaveTextContent(SIGN_OUT_NOT_CONFIRMED);
+});
+
+test.each([
+  ['a network error', new ApiError(0, 'network_error')],
+  // e.g. a proxy's 502: the backend never answered, so the cookie stays.
+  ['a non-backend error', new ApiError(502, 'unknown_error')],
+])(
+  'signOut after %s keeps the session and lets the user retry',
+  async (_label, error) => {
+    vi.mocked(logout).mockRejectedValueOnce(error);
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, authResponse('an@example.com', 'tok-a')),
+    );
+    renderApp('/');
+    await screen.findByRole('heading', { name: 'Xin chào, an@example.com' });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Đăng xuất' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      SIGN_OUT_NOT_REACHED,
+    );
+    expect(
+      screen.getByRole('heading', { name: 'Xin chào, an@example.com' }),
+    ).toBeInTheDocument();
+    expect(getAccessToken()).toBe('tok-a');
+    const button = screen.getByRole('button', { name: 'Đăng xuất' });
+    expect(button).toBeEnabled();
+
+    // The retry reaches the server and signs out.
+    await userEvent.click(button);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Đăng nhập' }),
+    ).toBeInTheDocument();
+    expect(logout).toHaveBeenCalledTimes(2);
+    expect(getAccessToken()).toBeNull();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  },
+);
+
+test('a confirmed signOut shows no warning', async () => {
+  fetchMock.mockResolvedValueOnce(
+    jsonResponse(200, authResponse('an@example.com', 'tok-a')),
+  );
+  renderApp('/');
+  await screen.findByRole('heading', { name: 'Xin chào, an@example.com' });
+
+  await userEvent.click(screen.getByRole('button', { name: 'Đăng xuất' }));
+
+  expect(
+    await screen.findByRole('heading', { name: 'Đăng nhập' }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+test('the sign-out warning goes away once a new session starts', async () => {
+  vi.mocked(logout).mockRejectedValue(new ApiError(500, 'internal_error'));
+  fetchMock.mockResolvedValueOnce(
+    jsonResponse(200, authResponse('an@example.com', 'tok-a')),
+  );
+  const { result } = renderHook(() => useAuth(), { wrapper: AppProviders });
+  await waitFor(() => {
+    expect(result.current.status).toBe('authenticated');
+  });
+
+  let outcome: SignOutResult | undefined;
+  await act(async () => {
+    outcome = await result.current.signOut();
+  });
+  expect(outcome).toBe('not_confirmed');
+  expect(result.current.status).toBe('anonymous');
+  expect(result.current.signOutFailed).toBe(true);
+
+  vi.mocked(login).mockResolvedValue(authResponse('an@example.com', 'tok-b'));
+  await act(async () => {
+    await result.current.signIn('an@example.com', 'mat-khau-1');
+  });
+  expect(result.current.signOutFailed).toBe(false);
 });
 
 test('signIn while the mount refresh is pending keeps the new user', async () => {

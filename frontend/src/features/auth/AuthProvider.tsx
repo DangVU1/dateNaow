@@ -12,27 +12,53 @@ import {
   refreshAccessToken,
   waitForPendingRefresh,
 } from '../../shared/api/client';
+import { ApiError } from '../../shared/api/errors';
 import { setAccessToken } from '../../shared/api/tokenStore';
 import type { AuthResponse, UserDto } from '../../shared/api/types';
 import { login, logout, register } from './api';
-import { AuthContext, type AuthContextValue, type AuthStatus } from './useAuth';
+import {
+  AuthContext,
+  type AuthContextValue,
+  type AuthStatus,
+  type SignOutResult,
+} from './useAuth';
 
 interface AuthState {
   status: AuthStatus;
   user: UserDto | null;
+  /** The last sign-out was not confirmed by the server (DECISIONS #17). */
+  signOutFailed: boolean;
 }
 
 type AuthAction =
   | { type: 'authenticated'; user: UserDto }
   | { type: 'user_updated'; user: UserDto }
-  | { type: 'anonymous' };
+  | { type: 'anonymous' }
+  | { type: 'signed_out'; confirmed: boolean };
 
-const initialState: AuthState = { status: 'loading', user: null };
+/** The backend's own 500 envelope, which still clears the refresh cookie. */
+function isBackendInternalError(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 500 &&
+    err.code === 'internal_error'
+  );
+}
+
+const initialState: AuthState = {
+  status: 'loading',
+  user: null,
+  signOutFailed: false,
+};
 
 function reducer(state: AuthState, action: AuthAction): AuthState {
   switch (action.type) {
     case 'authenticated':
-      return { status: 'authenticated', user: action.user };
+      return {
+        status: 'authenticated',
+        user: action.user,
+        signOutFailed: false,
+      };
     case 'user_updated':
       return state.status === 'authenticated'
         ? { ...state, user: action.user }
@@ -40,7 +66,13 @@ function reducer(state: AuthState, action: AuthAction): AuthState {
     case 'anonymous':
       return state.status === 'anonymous'
         ? state
-        : { status: 'anonymous', user: null };
+        : { status: 'anonymous', user: null, signOutFailed: false };
+    case 'signed_out':
+      return {
+        status: 'anonymous',
+        user: null,
+        signOutFailed: !action.confirmed,
+      };
   }
 }
 
@@ -116,16 +148,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // token. Let it settle first, so logout revokes the newest cookie and
     // nothing re-sets the token after it is cleared below.
     await waitForPendingRefresh();
+    let result: SignOutResult = 'signed_out';
     try {
       await logout();
-    } catch {
-      // The server answers 204 even for unknown tokens; a failure here is
-      // a network problem. Signing out locally must still happen.
+    } catch (err) {
+      // The server answers 204 even for unknown tokens, so a failure is one
+      // of two cases. The backend's own 500 (#17): the refresh token could
+      // not be revoked, but that response cleared the cookie, so sign out
+      // locally and let the sign-in page say the server did not confirm.
+      // Anything else (no response, a proxy error): the cookie may still be
+      // there, so signing out locally would be untrue; keep the session and
+      // let the caller offer a retry.
+      result = isBackendInternalError(err) ? 'not_confirmed' : 'not_reached';
     }
+    if (result === 'not_reached') return result;
     await waitForPendingRefresh();
     setAccessToken(null);
     queryClient.clear();
-    dispatch({ type: 'anonymous' });
+    dispatch({ type: 'signed_out', confirmed: result === 'signed_out' });
+    return result;
   }, [queryClient]);
 
   const setUser = useCallback((user: UserDto) => {
@@ -136,6 +177,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       status: state.status,
       user: state.user,
+      signOutFailed: state.signOutFailed,
       signIn,
       signUp,
       signOut,

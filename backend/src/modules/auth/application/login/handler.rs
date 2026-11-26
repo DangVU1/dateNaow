@@ -41,8 +41,10 @@ where
     /// have accounts.
     pub async fn execute(&self, cmd: LoginCommand) -> Result<(User, Session), AuthError> {
         // 1. Malformed input cannot match any account: reject without counting.
-        //    `parse`, not `parse_new`: a common password is a guess that must
-        //    be counted below, and older accounts may have one (#16).
+        //    `PlainPassword`, not `NewPassword`: a common password is a guess
+        //    that must be counted below, and older accounts may have one
+        //    (#16). Both forms are NFC (#17), so the verify below matches the
+        //    password however the device composed it.
         let (Ok(email), Ok(password)) =
             (Email::parse(&cmd.email), PlainPassword::parse(cmd.password))
         else {

@@ -20,4 +20,4 @@ pub use repositories::refresh_token_repository::{
     RefreshRepoError, RefreshTokenRecord, RefreshTokenRepository,
 };
 pub use value_objects::opaque_token::{InvalidToken, OpaqueToken, TokenGenerationError};
-pub use value_objects::password::{PasswordError, PlainPassword};
+pub use value_objects::password::{NewPassword, PasswordError, PlainPassword};

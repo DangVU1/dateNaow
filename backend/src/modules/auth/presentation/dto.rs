@@ -2,7 +2,7 @@
 //!
 //! The request fields carry no `#[validate]` rules: the 64 KiB body limit
 //! caps their size, and the domain (`Email::parse`, `PlainPassword::parse`,
-//! `PlainPassword::parse_new`) returns the field codes (`too_short`,
+//! `NewPassword::parse`) returns the field codes (`too_short`,
 //! `too_long`, `too_common`, `invalid_email`, ...).
 
 use std::fmt;
@@ -54,11 +54,12 @@ impl fmt::Debug for LoginRequest {
     }
 }
 
-impl From<RegisterRequest> for RegisterCommand {
-    fn from(request: RegisterRequest) -> Self {
-        Self {
-            email: request.email,
-            password: request.password,
+impl RegisterRequest {
+    pub fn into_command(self, client_ip: std::net::IpAddr) -> RegisterCommand {
+        RegisterCommand {
+            email: self.email,
+            password: self.password,
+            client_ip,
         }
     }
 }

@@ -2,35 +2,51 @@ use std::sync::Arc;
 
 use crate::modules::auth::application::error::AuthError;
 use crate::modules::auth::application::register::RegisterCommand;
+use crate::modules::auth::application::services::attempt_limiter::{
+    AttemptLimiter, LimitKey, REGISTER_ACTION, REGISTER_PER_IP,
+};
 use crate::modules::auth::application::services::{PasswordHashService, Session, SessionService};
-use crate::modules::auth::domain::{PlainPassword, RefreshTokenRepository};
+use crate::modules::auth::domain::{AttemptRepository, NewPassword, RefreshTokenRepository};
 use crate::modules::users::domain::{Email, NewUser, User, UserRepoError, UserRepository};
 use crate::shared::error::FieldErrors;
 
-pub struct RegisterHandler<U: UserRepository, R: RefreshTokenRepository> {
+pub struct RegisterHandler<U: UserRepository, R: RefreshTokenRepository, A: AttemptRepository> {
     users: U,
     hasher: PasswordHashService,
+    limiter: AttemptLimiter<A>,
     sessions: Arc<SessionService<U, R>>,
 }
 
-impl<U: UserRepository, R: RefreshTokenRepository> RegisterHandler<U, R> {
-    pub fn new(users: U, hasher: PasswordHashService, sessions: Arc<SessionService<U, R>>) -> Self {
+impl<U, R, A> RegisterHandler<U, R, A>
+where
+    U: UserRepository,
+    R: RefreshTokenRepository,
+    A: AttemptRepository,
+{
+    pub fn new(
+        users: U,
+        hasher: PasswordHashService,
+        limiter: AttemptLimiter<A>,
+        sessions: Arc<SessionService<U, R>>,
+    ) -> Self {
         Self {
             users,
             hasher,
+            limiter,
             sessions,
         }
     }
 
     /// Validates email and password (reporting both at once; the password
-    /// may be `too_short`, `too_long` or `too_common`), hashes the
-    /// password, creates the user and starts a session.
+    /// may be `too_short`, `too_long` or `too_common`), applies the sign-up
+    /// limit, hashes the password, creates the user and starts a session.
     pub async fn execute(&self, cmd: RegisterCommand) -> Result<(User, Session), AuthError> {
+        // 1. Malformed input: a 422 without counting, like sign-in. Counts
+        //    characters before any hashing, so an oversized password is
+        //    rejected without running Argon2 (P4); a new password must also
+        //    not be a common one (#16).
         let email = Email::parse(&cmd.email);
-        // Counts characters before any hashing, so an oversized password is
-        // rejected without running Argon2 (P4); a new password must also not
-        // be a common one (#16).
-        let password = PlainPassword::parse_new(cmd.password);
+        let password = NewPassword::parse(cmd.password);
 
         let (email, password) = match (email, password) {
             (Ok(email), Ok(password)) => (email, password),
@@ -45,6 +61,19 @@ impl<U: UserRepository, R: RefreshTokenRepository> RegisterHandler<U, R> {
                 return Err(AuthError::Validation(fields));
             }
         };
+
+        // 2. Record first, count second (#17), before Argon2 and before the
+        //    duplicate-email check, so neither the CPU cost nor the
+        //    `email_taken` answer is available beyond the limit. Successful
+        //    sign-ups are not forgiven: the limit also bounds how many
+        //    accounts one address can create.
+        self.limiter
+            .acquire(&[&[LimitKey::ip(
+                REGISTER_ACTION,
+                cmd.client_ip,
+                REGISTER_PER_IP,
+            )]])
+            .await?;
 
         let password_hash = self
             .hasher

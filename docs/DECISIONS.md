@@ -79,8 +79,8 @@ Each entry: date, decision, rationale, and source. Superseded entries stay in pl
     - Every refresh 401 clears the cookie.
     - Cookie: `dn_refresh`, HttpOnly, SameSite=Strict, Path=/api/v1/auth.
     - Signing up also signs the user in.
-  - **P4 — passwords:** 8–128 characters with no composition rules; Argon2id with the crate's default parameters, configurable. *Amended by #16:* common passwords are also rejected.
-  - **P5 — attempt limits:** login 5 failures per email and 20 per IP in 15 minutes; password reset 3 per email and 10 per IP per hour. Attempts are recorded before they are counted; IPv6 is limited per /64; limiter keys are hashed; `X-Forwarded-For` is read only when `TRUST_PROXY=true`. *Amended by #13:* the per-email limits are replaced by limits per (email, IP) pair plus a looser global per-email cap.
+  - **P4 — passwords:** 8–128 characters with no composition rules; Argon2id with the crate's default parameters, configurable. *Amended by #16:* common passwords are also rejected. *Amended by #17:* passwords are normalised to NFC.
+  - **P5 — attempt limits:** login 5 failures per email and 20 per IP in 15 minutes; password reset 3 per email and 10 per IP per hour. Attempts are recorded before they are counted; IPv6 is limited per /64; limiter keys are hashed; `X-Forwarded-For` is read only when `TRUST_PROXY=true`. *Amended by #13:* the per-email limits are replaced by limits per (email, IP) pair plus a looser global per-email cap. *Amended by #17:* a sign-up limit per IP, and only the rightmost `X-Forwarded-For` entry is used.
   - **P6 — password reset:** single-use link valid for 30 minutes, carrying the token in the URL fragment. The request endpoint always returns 204 and sends the email in a background task. Completing a reset revokes all refresh tokens. SMTP is plaintext to Mailpit only.
   - **P7 — admin bootstrap:** the `make_admin` CLI; admin checks re-read the role from the database.
   - **P8:** OpenAPI is served as JSON only.
@@ -151,3 +151,18 @@ Each entry: date, decision, rationale, and source. Superseded entries stay in pl
 - **Options considered:** block common passwords (chosen); accept 50 guesses per 15 minutes per email as decided in #13; lower the global cap to 20.
 - **Rationale:** with #13, an attacker using many IPs gets up to 50 guesses per 15 minutes per email (about 4,800 a day, ten times the old P5). Blocking common passwords removes the passwords such guessing finds, and adds no new lockout risk. Lowering the cap would make lockout cheaper (#15), and a daily cap would let a single IP fill it, bringing F2 back. Review of #13, finding D2.
 - **Source:** owner's choice in chat on 2026-11-25.
+
+## #17 — Plan 1 review follow-ups (amends P4, P5 and plan 1 Task 7)
+
+- **Date:** 2026-11-26
+- **Decision:** before PR #1 is merged, the open items from the plan 1 reviews are settled as follows.
+  - **Sign-up limit (amends P5):** at most 10 sign-up attempts per IP address (IPv6: per /64) per hour, using the existing attempt limiter (record first, count second, hashed keys, 429 with `Retry-After`).
+  - **`X-Forwarded-For` (amends P5 wording):** with `TRUST_PROXY=true`, only the rightmost entry is used. If it is not a valid address, the socket address is used; entries further left are never used. A warning is logged once if a request carries `X-Forwarded-For` while `TRUST_PROXY` is off.
+  - **Logout (amends plan 1 Task 7):** if the refresh token cannot be revoked because of a storage error, logout answers 500 and still clears the cookie, instead of always answering 204.
+  - **Unicode passwords (amends P4):** passwords are normalised to NFC before every use (sign-up, password reset, sign-in), so the same password typed on two devices matches. The length rules and the common-password list (#16) apply to the normalised form. Uses the `unicode-normalization` crate, already in the dependency tree through sqlx.
+  - **Other fixes:** a wrong HTTP method answers 405 with the JSON error envelope (`method_not_allowed`). Concurrent reset requests leave only one live reset link. Code that sets a new password requires a `NewPassword` type, which only the common-password check can produce. An index on `auth_attempts.attempted_at` serves the prune query. Plan 1 notes that the refresh flow loads the user before rotating the token.
+  - **Kept as they are:** the ~1 ms timing difference between known and unknown emails on reset requests; the extra query when a reset is confirmed; shared-IP limits (D3); a reset clearing only the resetting IP's pair (D4).
+- **Options considered:** for each item, fix now or defer. For logout: always 204 (plan) or 500 with the cookie cleared (chosen). For Unicode: NFC now (chosen) or record as a known limitation.
+- **Rationale:** each fix is small and closes a gap found in review before real users exist. Normalising passwords is free before launch but would need every stored hash migrated after it. A 500 on a failed logout tells the user truthfully that the session may still be live.
+- **Source:** owner's choices in chat on 2026-11-26. For the two fix lists the owner accepted Claude's recommendation to do all eight.
+

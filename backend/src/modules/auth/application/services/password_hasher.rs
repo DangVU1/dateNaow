@@ -14,7 +14,7 @@ use argon2::password_hash::{self, PasswordHasher, PasswordVerifier};
 use argon2::{Algorithm, Argon2, Params, Version};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 
-use crate::modules::auth::domain::PlainPassword;
+use crate::modules::auth::domain::{NewPassword, PlainPassword};
 
 /// Hashing or verification could not be carried out. A wrong password is not
 /// an error: `verify` returns `Ok(false)` for it.
@@ -76,8 +76,10 @@ impl PasswordHashService {
     }
 
     /// Hashes `p` with a fresh random salt and returns the PHC string
-    /// (`$argon2id$v=19$m=...,t=...,p=...$salt$hash`).
-    pub async fn hash(&self, p: &PlainPassword) -> Result<String, HashError> {
+    /// (`$argon2id$v=19$m=...,t=...,p=...$salt$hash`). Takes a
+    /// [`NewPassword`] so only a password that passed the common-password
+    /// check can become a stored hash (#17).
+    pub async fn hash(&self, p: &NewPassword) -> Result<String, HashError> {
         let params = self.params.clone();
         let password = p.expose().to_owned();
         let permit = self.permit().await?;
@@ -112,7 +114,9 @@ impl PasswordHashService {
     /// Verifies `p` against the dummy hash and discards the result, so that a
     /// sign-in for an unknown email takes as long as one for a real account.
     /// A failure is logged (without the password) and otherwise ignored,
-    /// because the caller answers "invalid credentials" either way.
+    /// because the caller answers "invalid credentials" either way. `p` is
+    /// already NFC like every `PlainPassword`, so the normalisation cost is
+    /// the same on both paths.
     pub async fn verify_dummy(&self, p: &PlainPassword) {
         if let Err(e) = self.verify(p, &self.dummy_hash).await {
             tracing::error!(error = %e, "dummy password verification failed");
@@ -137,19 +141,29 @@ mod tests {
         PlainPassword::parse(raw.to_owned()).expect("valid password")
     }
 
+    fn new_password(raw: &str) -> NewPassword {
+        NewPassword::parse(raw.to_owned()).expect("valid new password")
+    }
+
     #[tokio::test]
     async fn hash_then_verify_returns_true() {
         let svc = service();
-        let p = password("correct horse battery");
-        let h = svc.hash(&p).await.expect("hash");
-        assert!(svc.verify(&p, &h).await.expect("verify"));
+        let h = svc
+            .hash(&new_password("correct horse battery"))
+            .await
+            .expect("hash");
+        assert!(
+            svc.verify(&password("correct horse battery"), &h)
+                .await
+                .expect("verify")
+        );
     }
 
     #[tokio::test]
     async fn verify_wrong_password_returns_false() {
         let svc = service();
         let h = svc
-            .hash(&password("correct horse battery"))
+            .hash(&new_password("correct horse battery"))
             .await
             .expect("hash");
         assert!(
@@ -161,14 +175,17 @@ mod tests {
 
     #[tokio::test]
     async fn hash_is_argon2id_phc_string() {
-        let h = service().hash(&password("mậtkhẩu😺")).await.expect("hash");
+        let h = service()
+            .hash(&new_password("mậtkhẩu😺"))
+            .await
+            .expect("hash");
         assert!(h.starts_with("$argon2id$v=19$m=1024,t=1,p=1$"), "{h}");
     }
 
     #[tokio::test]
     async fn same_password_hashes_differently_because_of_random_salt() {
         let svc = service();
-        let p = password("correct horse battery");
+        let p = new_password("correct horse battery");
         assert_ne!(
             svc.hash(&p).await.expect("hash"),
             svc.hash(&p).await.expect("hash")
@@ -187,9 +204,16 @@ mod tests {
     async fn verify_uses_params_stored_in_the_hash() {
         // A hash made with other parameters (e.g. before a config change) still verifies.
         let old = PasswordHashService::new(Params::new(2048, 2, 1, None).expect("valid params"));
-        let p = password("correct horse battery");
-        let h = old.hash(&p).await.expect("hash");
-        assert!(service().verify(&p, &h).await.expect("verify"));
+        let h = old
+            .hash(&new_password("correct horse battery"))
+            .await
+            .expect("hash");
+        assert!(
+            service()
+                .verify(&password("correct horse battery"), &h)
+                .await
+                .expect("verify")
+        );
     }
 
     #[tokio::test]
@@ -200,15 +224,27 @@ mod tests {
 
         let available = svc.permits.available_permits();
         assert!(available >= 1);
-        let p = password("correct horse battery");
+        let p = new_password("correct horse battery");
         let mut set = tokio::task::JoinSet::new();
         for _ in 0..(available * 3) {
             let svc = svc.clone();
-            let p = PlainPassword::parse(p.expose().to_owned()).expect("valid");
+            let p = NewPassword::parse(p.expose().to_owned()).expect("valid");
             set.spawn(async move { svc.hash(&p).await.is_ok() });
         }
         assert!(set.join_all().await.into_iter().all(|ok| ok));
         assert_eq!(svc.permits.available_permits(), available);
+    }
+
+    #[tokio::test]
+    async fn nfd_and_nfc_forms_hash_and_verify_as_one_password() {
+        // "mật khẩu đẹp lắm": set in one form, typed in the other (#17).
+        let nfc = "m\u{1EAD}t kh\u{1EA9}u \u{0111}\u{1EB9}p l\u{1EAF}m";
+        let nfd = "ma\u{0323}\u{0302}t kha\u{0302}\u{0309}u \u{0111}e\u{0323}p la\u{0306}\u{0301}m";
+        let svc = service();
+        let h = svc.hash(&new_password(nfc)).await.expect("hash");
+        assert!(svc.verify(&password(nfd), &h).await.expect("verify"));
+        let h = svc.hash(&new_password(nfd)).await.expect("hash");
+        assert!(svc.verify(&password(nfc), &h).await.expect("verify"));
     }
 
     #[tokio::test]

@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 use datenaow::modules::auth::application::ports::OutgoingEmail;
+use datenaow::modules::auth::domain::PasswordResetRepository;
+use datenaow::modules::auth::infrastructure::PgPasswordResetRepository;
+use datenaow::shared::clock::Clock;
 
 use crate::common::{TestApp, TestResponse};
 
@@ -441,6 +444,221 @@ async fn new_request_invalidates_previous_token(pool: PgPool) {
     assert_eq!(old.status, StatusCode::BAD_REQUEST);
     assert_eq!(old.body["error"]["code"], "invalid_or_expired_token");
     assert_eq!(new.status, StatusCode::NO_CONTENT, "{}", new.text);
+}
+
+#[sqlx::test]
+async fn concurrent_requests_leave_exactly_one_live_token(pool: PgPool) {
+    // #17: without serialising on the user row, each request's UPDATE missed
+    // the others' uncommitted inserts and several links stayed live.
+    const REQUESTS: u8 = 8;
+    let (app, _) = registered(pool.clone()).await;
+
+    // From different IPs, so the (email, IP) pair limit stays out of the way;
+    // 8 stays under the per-email cap of 10.
+    let mut set = tokio::task::JoinSet::new();
+    for n in 1..=REQUESTS {
+        let request = app
+            .post(REQUEST)
+            .peer(SocketAddr::new(client(n), 40000))
+            .json(&json!({ "email": EMAIL }));
+        set.spawn(async move { request.send().await });
+    }
+    let results = set.join_all().await;
+    for res in &results {
+        assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.text);
+    }
+
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM password_reset_tokens WHERE used_at IS NULL AND expires_at > $1",
+    )
+    .bind(app.clock.now())
+    .fetch_one(&pool)
+    .await
+    .expect("count live tokens");
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens")
+        .fetch_one(&pool)
+        .await
+        .expect("count tokens");
+    assert_eq!(live, 1, "exactly one live reset token");
+    assert_eq!(total, i64::from(REQUESTS), "every request stored a token");
+
+    // And exactly one of the emailed links works.
+    let sent = app.mailer.wait_for(usize::from(REQUESTS)).await;
+    assert_eq!(sent.len(), usize::from(REQUESTS));
+    let mut accepted = 0;
+    for email in &sent {
+        if confirm(&app, &token_in(email), NEW_PASSWORD).await.status == StatusCode::NO_CONTENT {
+            accepted += 1;
+        }
+    }
+    assert_eq!(accepted, 1);
+}
+
+#[sqlx::test]
+async fn concurrent_replace_for_user_leaves_exactly_one_unused_token(pool: PgPool) {
+    // The repository alone, without the limiter in front, so the calls
+    // overlap as much as the pool allows.
+    const CALLS: u8 = 32;
+    let (app, _) = registered(pool.clone()).await;
+    let user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(EMAIL)
+        .fetch_one(&pool)
+        .await
+        .expect("user id");
+    let repo = PgPasswordResetRepository::new(pool.clone());
+    let now = app.clock.now();
+
+    for round in 0..3u8 {
+        let mut set = tokio::task::JoinSet::new();
+        for n in 0..CALLS {
+            let repo = repo.clone();
+            let hash: [u8; 32] = Sha256::digest([round, n]).into();
+            set.spawn(async move {
+                repo.replace_for_user(user_id, hash, now + Duration::minutes(30), now)
+                    .await
+            });
+        }
+        for result in set.join_all().await {
+            result.expect("replace_for_user");
+        }
+
+        let unused: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM password_reset_tokens WHERE user_id = $1 AND used_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count unused tokens");
+        assert_eq!(unused, 1, "round {round}");
+    }
+}
+
+#[sqlx::test]
+async fn new_password_set_decomposed_signs_in_composed(pool: PgPool) {
+    // #17: "mật khẩu đẹp lắm" set with combining marks, typed precomposed.
+    let nfd = "ma\u{0323}\u{0302}t kha\u{0302}\u{0309}u \u{0111}e\u{0323}p la\u{0306}\u{0301}m";
+    let nfc = "m\u{1EAD}t kh\u{1EA9}u \u{0111}\u{1EB9}p l\u{1EAF}m";
+    let (app, _) = registered(pool).await;
+    let token = reset_token(&app, 1).await;
+
+    let res = confirm(&app, &token, nfd).await;
+
+    assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.text);
+    assert_eq!(login(&app, EMAIL, nfc).await.status, StatusCode::OK);
+}
+
+/// The id of `user_id`'s one unused reset token.
+async fn unused_token_id(pool: &PgPool, user_id: uuid::Uuid) -> uuid::Uuid {
+    sqlx::query_scalar(
+        "SELECT id FROM password_reset_tokens WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .expect("one unused token")
+}
+
+#[sqlx::test]
+async fn concurrent_consume_and_replace_never_deadlock(pool: PgPool) {
+    // Review of #17: `replace_for_user` locks users -> reset tokens; the
+    // confirm transaction must use the same order, or a confirmation racing
+    // a new request for the same user ends in `deadlock detected`.
+    let (app, _) = registered(pool.clone()).await;
+    let user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(EMAIL)
+        .fetch_one(&pool)
+        .await
+        .expect("user id");
+    let repo = PgPasswordResetRepository::new(pool.clone());
+    let now = app.clock.now();
+    let expires = now + Duration::minutes(30);
+
+    for i in 0..40u8 {
+        repo.replace_for_user(user_id, Sha256::digest([0, i]).into(), expires, now)
+            .await
+            .expect("seed token");
+        let token_id = unused_token_id(&pool, user_id).await;
+
+        let consume = {
+            let repo = repo.clone();
+            tokio::spawn(async move {
+                repo.consume_and_set_password(token_id, user_id, "$argon2id$fake", now)
+                    .await
+            })
+        };
+        let replace = {
+            let repo = repo.clone();
+            tokio::spawn(async move {
+                repo.replace_for_user(user_id, Sha256::digest([1, i]).into(), expires, now)
+                    .await
+            })
+        };
+        let consumed = consume
+            .await
+            .expect("join")
+            .expect("consume: no storage error");
+        replace
+            .await
+            .expect("join")
+            .expect("replace: no storage error");
+
+        // Whichever ran first, the newest request's token is the one live link.
+        let unused: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM password_reset_tokens WHERE user_id = $1 AND used_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count unused");
+        assert_eq!(unused, 1, "iteration {i}");
+        if consumed {
+            let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("stored hash");
+            assert_eq!(hash, "$argon2id$fake", "iteration {i}");
+        }
+    }
+}
+
+#[sqlx::test]
+async fn confirm_racing_a_new_request_never_fails_with_500(pool: PgPool) {
+    let (app, _) = registered(pool.clone()).await;
+    for i in 0..10u8 {
+        // A fresh hour each round, so the request limits never interfere.
+        app.clock.advance(Duration::minutes(61));
+        let token = reset_token(&app, usize::from(i) * 2 + 1).await;
+        let password = format!("racing-password-{i:03}");
+
+        let (confirmed, requested) = tokio::join!(
+            confirm(&app, &token, &password),
+            request_reset_from(&app, client(i + 1), EMAIL),
+        );
+
+        assert_eq!(
+            requested.status,
+            StatusCode::NO_CONTENT,
+            "{}",
+            requested.text
+        );
+        match confirmed.status {
+            // Confirmed first: the new password works.
+            StatusCode::NO_CONTENT => {
+                assert_eq!(login(&app, EMAIL, &password).await.status, StatusCode::OK);
+            }
+            // The new request invalidated the link first.
+            StatusCode::BAD_REQUEST => {
+                assert_eq!(confirmed.body["error"]["code"], "invalid_or_expired_token");
+            }
+            other => panic!("round {i}: confirm answered {other}: {}", confirmed.text),
+        }
+        // Wait for the second email so the next round's numbering holds.
+        assert_eq!(
+            app.mailer.wait_for(usize::from(i) * 2 + 2).await.len(),
+            usize::from(i) * 2 + 2
+        );
+    }
 }
 
 #[sqlx::test]

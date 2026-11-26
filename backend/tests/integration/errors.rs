@@ -1,5 +1,5 @@
 //! The JSON error envelope as seen over HTTP: `ValidatedJson` rejections,
-//! the body limit, the request timeout and unknown routes.
+//! the body limit, the request timeout, unknown routes and wrong methods.
 
 use std::time::Duration;
 
@@ -145,7 +145,17 @@ async fn unknown_api_route_returns_404_json(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn wrong_method_returns_405(pool: PgPool) {
-    let res = TestApp::new(pool).post("/api/v1/health").send().await;
-    assert_eq!(res.status, StatusCode::METHOD_NOT_ALLOWED);
+async fn wrong_method_returns_405_json_with_allow(pool: PgPool) {
+    // #17: the JSON envelope, not an empty body; axum's `Allow` stays.
+    let app = TestApp::new(pool);
+    for (res, allow) in [
+        (app.post("/api/v1/health").send().await, "GET,HEAD"),
+        (app.get("/api/v1/auth/login").send().await, "POST"),
+        (app.post("/api/v1/me").send().await, "GET,HEAD,PATCH"),
+    ] {
+        assert_eq!(res.status, StatusCode::METHOD_NOT_ALLOWED, "{}", res.text);
+        assert_error_envelope(&res.body, "method_not_allowed");
+        assert_eq!(res.headers["allow"], allow);
+        assert!(res.headers.contains_key("x-request-id"));
+    }
 }

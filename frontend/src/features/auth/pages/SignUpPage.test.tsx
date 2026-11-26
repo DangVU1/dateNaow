@@ -87,6 +87,20 @@ test('SignUpPage shows email_taken message', async () => {
   );
 });
 
+test('SignUpPage shows rate_limited message for the sign-up limit', async () => {
+  // DECISIONS #17: 10 sign-ups per IP an hour, Retry-After 3600.
+  vi.mocked(register).mockRejectedValue(
+    new ApiError(429, 'rate_limited', undefined, { retryAfterSecs: 3600 }),
+  );
+  renderApp('/sign-up');
+  await fillAndSubmit('an@example.com', 'mat-khau-dai');
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Bạn thử nhiều lần quá. Đợi khoảng 60 phút rồi thử lại nhé.',
+  );
+  expect(getAccessToken()).toBeNull();
+});
+
 test('SignUpPage rejects a password over 128 characters without calling the api', async () => {
   renderApp('/sign-up');
   const user = userEvent.setup();
